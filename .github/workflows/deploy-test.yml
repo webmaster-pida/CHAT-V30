@@ -1,0 +1,48 @@
+name: Deploy Chat to Cloud Run (Test)
+
+on:
+  push:
+    branches:
+      - develop
+
+env:
+  PROJECT_ID: pida-ai-test
+  REGION: us-central1
+  SERVICE_NAME: chat-service
+  GAR_LOCATION: us-central1-docker.pkg.dev/pida-ai-test/pida-services
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
+      id-token: write 
+
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Autenticación Segura (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: 'projects/736009271165/locations/global/workloadIdentityPools/github-pool/providers/github-provider'
+          service_account: 'sa-github-deployer@pida-ai-test.iam.gserviceaccount.com'
+
+      - name: Configurar Docker para Google Cloud
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+      - name: Compilar y Empaquetar Imagen
+        run: |
+          docker build -t ${{ env.GAR_LOCATION }}/${{ env.SERVICE_NAME }}:${{ github.sha }} .
+          docker push ${{ env.GAR_LOCATION }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
+
+      - name: Desplegar en Cloud Run (VPC)
+        run: |
+          gcloud run deploy ${{ env.SERVICE_NAME }} \
+            --image ${{ env.GAR_LOCATION }}/${{ env.SERVICE_NAME }}:${{ github.sha }} \
+            --region ${{ env.REGION }} \
+            --project ${{ env.PROJECT_ID }} \
+            --vpc-connector pida-connector \
+            --vpc-egress all-traffic \
+            --allow-unauthenticated
