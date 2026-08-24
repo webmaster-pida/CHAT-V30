@@ -45,4 +45,5 @@ jobs:
             --project ${{ env.PROJECT_ID }} \
             --vpc-connector pida-connector \
             --vpc-egress all-traffic \
+            --service-account sa-chat-backend-prod@pida-ai-prod.iam.gserviceaccount.com \
             --allow-unauthenticated
