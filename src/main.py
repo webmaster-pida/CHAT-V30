@@ -86,7 +86,8 @@ origins = settings.ALLOWED_ORIGINS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_origin_regex=r"https://pida-ai-v20--.*\.web\.app$|https://.*\.app\.github\.dev$",
+    # 👇 Acepta canales de preview tanto de 'pida-ai-test' como de 'pida-ai'
+    allow_origin_regex=r"https://(pida-ai-test|pida-ai)--.*\.web\.app$|https://.*\.app\.github\.dev$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
