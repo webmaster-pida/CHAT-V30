@@ -49,7 +49,13 @@ async def add_message_to_conversation(user_id: str, convo_id: str, message: Chat
 async def create_new_conversation(user_id: str, title: str) -> Dict[str, Any]:
     """Crea una nueva conversación y devuelve su ID y título."""
     try:
-        doc_ref = db.collection('users').document(user_id).collection('conversations').document()
+        # Asegurar la existencia del documento del usuario para evitar "documentos fantasma"
+        user_ref = db.collection('users').document(user_id)
+        await user_ref.set({
+            "updated_at": firestore.SERVER_TIMESTAMP
+        }, merge=True)
+
+        doc_ref = user_ref.collection('conversations').document()
         await doc_ref.set({
             "title": title,
             "created_at": firestore.SERVER_TIMESTAMP
