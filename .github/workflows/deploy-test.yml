@@ -43,6 +43,7 @@ jobs:
             --image ${{ env.GAR_LOCATION }}/${{ env.SERVICE_NAME }}:${{ github.sha }} \
             --region ${{ env.REGION }} \
             --project ${{ env.PROJECT_ID }} \
+            --memory 2Gi \
             --vpc-connector pida-connector \
             --vpc-egress all-traffic \
             --allow-unauthenticated
