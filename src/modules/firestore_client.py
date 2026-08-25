@@ -40,9 +40,15 @@ async def get_conversation_messages(user_id: str, convo_id: str) -> List[ChatMes
 async def add_message_to_conversation(user_id: str, convo_id: str, message: ChatMessage):
     """Añade un nuevo mensaje a una conversación, incluyendo un timestamp del servidor."""
     try:
+        # Asegurar la existencia del documento del usuario para evitar "documentos fantasma"
+        user_ref = db.collection('users').document(user_id)
+        await user_ref.set({
+            "updated_at": firestore.SERVER_TIMESTAMP
+        }, merge=True)
+
         message_data = message.model_dump()
         message_data["timestamp"] = firestore.SERVER_TIMESTAMP
-        await db.collection('users').document(user_id).collection('conversations').document(convo_id).collection('messages').add(message_data)
+        await user_ref.collection('conversations').document(convo_id).collection('messages').add(message_data)
     except Exception as e:
         log.error(f"Error al añadir mensaje a la convo {convo_id} del usuario {user_id}: {e}")
 

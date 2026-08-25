@@ -429,9 +429,15 @@ async def consume_chat_credit(user_id: str, plan: str):
     
     if limit == -1: return
 
+    # Asegurar la existencia del documento del usuario para evitar "documentos fantasma"
+    user_ref = db.collection('users').document(user_id)
+    await user_ref.set({
+        "updated_at": firestore.SERVER_TIMESTAMP
+    }, merge=True)
+
     # Usamos el mes actual para agrupar los créditos de todo el mes
     current_month = get_month_utc_minus_6()
-    stats_ref = db.collection('users').document(user_id).collection('usage_stats').document(current_month)
+    stats_ref = user_ref.collection('usage_stats').document(current_month)
     
     @firestore.async_transactional
     async def check_and_increment(transaction, ref):
@@ -454,9 +460,15 @@ async def consume_chat_credit(user_id: str, plan: str):
     await check_and_increment(transaction, stats_ref)
 
 async def refund_chat_credit(user_id: str):
+    # Asegurar la existencia del documento del usuario para evitar "documentos fantasma"
+    user_ref = db.collection('users').document(user_id)
+    await user_ref.set({
+        "updated_at": firestore.SERVER_TIMESTAMP
+    }, merge=True)
+
     # Usamos el mes actual para devolver el crédito al mes correspondiente
     current_month = get_month_utc_minus_6()
-    stats_ref = db.collection('users').document(user_id).collection('usage_stats').document(current_month)
+    stats_ref = user_ref.collection('usage_stats').document(current_month)
     
     @firestore.async_transactional
     async def check_and_decrement(transaction, ref):
