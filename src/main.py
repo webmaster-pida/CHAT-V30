@@ -6,10 +6,11 @@ import asyncio
 import io
 import re
 from datetime import datetime, timedelta, timezone
-from fastapi import FastAPI, Request, Depends, HTTPException, status, Form, Response
+from fastapi import FastAPI, Request, Depends, HTTPException, status, Form, Response, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Dict, Any
+import uuid
 
 # 👇 NUEVAS IMPORTACIONES AÑADIDAS
 from pydantic import BaseModel
@@ -24,6 +25,7 @@ from src.config import settings, log
 from src.models.chat_models import ChatRequest, ChatMessage
 
 from src.modules import perplexity_client, gemini_client, rag_client, firestore_client
+from src.modules.deepresearch import ejecutar_investigacion_profunda
 from src.core.prompts import PIDA_SYSTEM_PROMPT
 from src.core.security import get_current_user
 
@@ -42,6 +44,12 @@ class VerificationRequest(BaseModel):
 # 👇 NUEVO: Modelo para el Teaser de la Landing Page
 class TeaserRequest(BaseModel):
     prompt: str
+
+# 👇 NUEVO: Modelo y DB para Deep Research
+class ResearchRequest(BaseModel):
+    prompt: str
+
+jobs_db: dict = {}
 
 # MAPA DE TRADUCCIÓN: ID de Stripe -> Nombre del Plan interno para que no se equivoque
 STRIPE_PRICE_MAP = {
@@ -1387,3 +1395,41 @@ async def create_portal_session(request: Request, current_user: Dict[str, Any] =
     except Exception as e:
         log.error(f"Error generando sesión del portal: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/research", tags=["Deep Research"])
+async def start_research(
+    request: Request,
+    body: ResearchRequest,
+    background_tasks: BackgroundTasks,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    await verify_active_subscription(current_user)
+    user_email = current_user.get("email", "").strip().lower()
+    country_code = request.headers.get("X-Country-Code", "General")
+    job_id = str(uuid.uuid4())
+    
+    jobs_db[job_id] = {
+        "status": "PENDIENTE",
+        "result": None,
+        "prompt": body.prompt,
+        "user_email": user_email
+    }
+    
+    background_tasks.add_task(
+        ejecutar_investigacion_profunda,
+        job_id,
+        body.prompt,
+        user_email,
+        country_code,
+        jobs_db
+    )
+    
+    return {"job_id": job_id, "status": "PENDIENTE"}
+
+@app.get("/api/research/{job_id}", tags=["Deep Research"])
+async def get_research_status(job_id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
+    await verify_active_subscription(current_user)
+    job = jobs_db.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Investigación no encontrada")
+    return job
