@@ -64,6 +64,9 @@ async def generate_streaming_response(
         temperature=settings.TEMPERATURE,
         top_p=settings.TOP_P,
         system_instruction=system_prompt,
+        thinking_config=types.ThinkingConfig(
+            thinking_level="medium"
+        ),
         safety_settings=[
             types.SafetySetting(category='HARM_CATEGORY_HATE_SPEECH', threshold='BLOCK_NONE'),
             types.SafetySetting(category='HARM_CATEGORY_DANGEROUS_CONTENT', threshold='BLOCK_NONE'),

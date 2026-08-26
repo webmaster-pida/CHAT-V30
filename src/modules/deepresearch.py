@@ -71,12 +71,15 @@ Pregunta del usuario: {prompt}
 """
 
         generation_config = types.GenerateContentConfig(
-            max_output_tokens=32000,
-            system_instruction=PIDA_SYSTEM_PROMPT
+            max_output_tokens=65536,
+            system_instruction=PIDA_SYSTEM_PROMPT,
+            thinking_config=types.ThinkingConfig(
+                thinking_level="high"
+            )
         )
 
         response = await gemini_client.client.aio.models.generate_content(
-            model="gemini-2.5-pro",
+            model=settings.GEMINI_MODEL,
             contents=final_prompt,
             config=generation_config
         )
