@@ -26,7 +26,7 @@ class Settings(BaseSettings):
 
     # --- Variables de Google Cloud y API ---
     GOOGLE_CLOUD_PROJECT: str = "pida-ai-v20"
-    GOOGLE_CLOUD_LOCATION: str = "us-central1"
+    GOOGLE_CLOUD_LOCATION: str = "us"
     GEMINI_MODEL: str = "gemini-3.7-flash"
     
     # URL del RAG
