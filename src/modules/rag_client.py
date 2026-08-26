@@ -6,7 +6,7 @@ from src.config import log, settings
 # La URL de tu servicio de indexación. ¡Asegúrate que termine en /query!
 # RAG_API_URL = "https://pida-rag-api-640849120264.us-central1.run.app/query"
 
-async def search_internal_documents(query: str) -> str:
+async def search_internal_documents(query: str) -> dict:
     """
     Realiza una consulta al servicio RAG interno para buscar en los documentos indexados.
     Ahora es más resiliente a los timeouts y errores de red.
@@ -30,10 +30,11 @@ async def search_internal_documents(query: str) -> str:
 
             if not data or "results" not in data or not data["results"]:
                 log.warning("RAG interno no devolvió resultados para la consulta.")
-                return "" # Devolvemos una cadena vacía para no añadir texto innecesario al prompt
+                return {"text": "", "documents": []} # Devolvemos una estructura vacía
 
             # Formateamos los resultados para inyectarlos en el prompt
             formatted_results = "\n\n### Contexto de Documentos Internos (RAG):\n"
+            document_titles = []
             for i, doc in enumerate(data.get("results", [])):
                 # PASO 1: Extraer los datos de forma segura
                 title = doc.get("title")
@@ -43,6 +44,7 @@ async def search_internal_documents(query: str) -> str:
 
                 # PASO 2: Decidir el título a mostrar, con fallbacks
                 display_title = title or source_filename or "Documento Interno"
+                document_titles.append(display_title)
 
                 # PASO 3: Construir la línea de la cita según las reglas del prompt
                 citation_line = f"Título: {display_title}"
@@ -58,15 +60,21 @@ async def search_internal_documents(query: str) -> str:
                 formatted_results += f"{citation_line}\n"
                 formatted_results += f"**Texto:**\n> {content}\n\n"
             
-            return formatted_results
+            return {
+                "text": formatted_results,
+                "documents": list(set(document_titles))
+            }
 
         except httpx.TimeoutException as e:
             # --- MANEJO DE ERROR MEJORADO ---
             log.error(f"Timeout al contactar el servicio RAG interno en {rag_url}: {e}", exc_info=True)
-            return "\n\n### Contexto de Documentos Internos (RAG):\nEl servicio de búsqueda de documentos internos tardó demasiado en responder y no está disponible en este momento.\n"
+            err_text = "\n\n### Contexto de Documentos Internos (RAG):\nEl servicio de búsqueda de documentos internos tardó demasiado en responder y no está disponible en este momento.\n"
+            return {"text": err_text, "documents": []}
         except httpx.RequestError as e:
             log.error(f"Error de red al contactar el servicio RAG interno en {rag_url}: {e}", exc_info=True)
-            return "\n\n### Contexto de Documentos Internos (RAG):\nError de conexión al buscar en los documentos internos.\n"
+            err_text = "\n\n### Contexto de Documentos Internos (RAG):\nError de conexión al buscar en los documentos internos.\n"
+            return {"text": err_text, "documents": []}
         except Exception as e:
             log.error(f"Error inesperado al procesar la respuesta del RAG interno: {e}", exc_info=True)
-            return "\n\n### Contexto de Documentos Internos (RAG):\nError al procesar la búsqueda en los documentos internos.\n"
+            err_text = "\n\n### Contexto de Documentos Internos (RAG):\nError al procesar la búsqueda en los documentos internos.\n"
+            return {"text": err_text, "documents": []}

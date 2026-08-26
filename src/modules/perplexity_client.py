@@ -34,7 +34,7 @@ async def close_http_client():
         await _http_client.aclose()
 
 
-async def get_perplexity_research(query: str) -> str:
+async def get_perplexity_research(query: str) -> dict:
     url = "https://api.perplexity.ai/chat/completions"
     
     enhanced_query = f"Busca rápidamente datos concretos, hechos y URLs institucionales sobre: '{query}'. Sé muy conciso, no analices, solo entrega la información cruda y los enlaces."
@@ -70,16 +70,28 @@ Reglas estrictas:
         citations = data.get("citations", [])
         
         links_text = "\n\nFUENTES DE INTERNET:\n" + "\n".join(citations)
-        return f"{content}\n{links_text}"
+        return {
+            "text": f"{content}\n{links_text}",
+            "citations": citations
+        }
         
     except httpx.HTTPStatusError as e:
         log.error(f"Error HTTP de Perplexity ({e.response.status_code}): {e.response.text}", exc_info=True)
-        return "[INVESTIGACIÓN WEB FALLIDA: Error de autorización o de servidor en Perplexity]"
+        return {
+            "text": "[INVESTIGACIÓN WEB FALLIDA: Error de autorización o de servidor en Perplexity]",
+            "citations": []
+        }
         
     except httpx.TimeoutException as e:
         log.error(f"Timeout: La API de Perplexity tardó demasiado.", exc_info=True)
-        return "[INVESTIGACIÓN WEB FALLIDA: El servidor de búsqueda superó el tiempo de espera]"
+        return {
+            "text": "[INVESTIGACIÓN WEB FALLIDA: El servidor de búsqueda superó el tiempo de espera]",
+            "citations": []
+        }
         
     except Exception as e:
         log.error(f"Error inesperado consultando Perplexity: {e}", exc_info=True)
-        return "[INVESTIGACIÓN WEB FALLIDA: Error de conexión desconocido]"
+        return {
+            "text": "[INVESTIGACIÓN WEB FALLIDA: Error de conexión desconocido]",
+            "citations": []
+        }

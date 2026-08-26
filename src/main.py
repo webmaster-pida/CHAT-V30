@@ -41,10 +41,6 @@ class VerificationRequest(BaseModel):
     frontend_url: str
     display_name: str | None = "Investigador"  # <-- Añadimos este campo
 
-# 👇 NUEVO: Modelo para el Teaser de la Landing Page
-class TeaserRequest(BaseModel):
-    prompt: str
-
 # 👇 NUEVO: Modelo y DB para Deep Research
 class ResearchRequest(BaseModel):
     prompt: str
@@ -558,7 +554,12 @@ Respuesta (sin comillas, sin explicaciones):"""
             rag_task = rag_client.search_internal_documents(search_query)
             perp_task = perplexity_client.get_perplexity_research(search_query)
             
-            rag_context, web_context = await asyncio.gather(rag_task, perp_task)
+            rag_res, perp_res = await asyncio.gather(rag_task, perp_task)
+            rag_context = rag_res["text"]
+            web_context = perp_res["text"]
+            rag_res, perp_res = await asyncio.gather(rag_task, perp_task)
+            rag_context = rag_res["text"]
+            web_context = perp_res["text"]
             
             yield create_sse_event({"event": "status", "message": "Sintetizando y correlacionando fuentes..."})
         
@@ -622,108 +623,6 @@ Pregunta del usuario: {chat_request.prompt}
 @app.get("/status", tags=["Status"])
 def read_status():
     return {"status": "ok", "message": "PIDA Chat Backend v3.0 (Security Patched)"}
-
-# 👇 ENDPOINT PARA EL LEAD MAGNET (TRY-BEFORE-YOU-BUY) 100% REAL Y COMPLETO
-@app.post("/teaser-chat", tags=["Lead Magnet"])
-async def teaser_chat_stream_handler(request: Request, body: TeaserRequest):
-    """
-    Endpoint público para la Landing Page.
-    Genera una respuesta idéntica a la de la app (Perplexity + RAG + Respuesta completa).
-    Protegido por ID de Navegador (Max 2 al día) para evitar abusos de consumo.
-    """
-    country_code = request.headers.get('X-Country-Code', 'General')
-    
-    # 1. OBTENER EL SELLO DEL NAVEGADOR
-    anon_id = request.headers.get("X-Anon-ID")
-    
-    if not anon_id:
-        raise HTTPException(status_code=400, detail="Falta identificador de dispositivo.")
-    
-    # 2. VALIDAR LÍMITES EN FIRESTORE POR NAVEGADOR
-    today_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-    limit_doc_ref = db.collection('teaser_limits').document(f"{anon_id}_{today_str}")
-    
-    try:
-        doc = await limit_doc_ref.get()
-        if doc.exists:
-            count = doc.to_dict().get('count', 0)
-            if count >= 2:  # 👈 LÍMITE: 2 pruebas completas por navegador al día
-                raise HTTPException(status_code=429, detail="Has alcanzado el límite de demostraciones gratuitas por hoy.")
-            await limit_doc_ref.update({'count': firestore.Increment(1)})
-        else:
-            await limit_doc_ref.set({'count': 1})
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        log.error(f"Error verificando límite de Teaser para {anon_id}: {e}")
-    
-    async def restricted_stream_generator():
-        try:
-            # 3. BÚSQUEDA 100% REAL EN PARALELO (RAG + PERPLEXITY)
-            yield f"data: {json.dumps({'event': 'status', 'message': 'Analizando fuentes y biblioteca privada...'})}\n\n"
-            
-            search_query = body.prompt
-            
-            rag_task = rag_client.search_internal_documents(search_query)
-            perp_task = perplexity_client.get_perplexity_research(search_query)
-            
-            rag_context, web_context = await asyncio.gather(rag_task, perp_task)
-            
-            yield f"data: {json.dumps({'event': 'status', 'message': 'Sintetizando y correlacionando fuentes...'})}\n\n"
-            
-            combined_context = f"{rag_context}\n{web_context}"
-            trusted_urls_set = set(re.findall(r'https?://[^\s\)\],>]+', combined_context))
-            
-            yield f"data: {json.dumps({'event': 'status', 'message': 'Formulando respuesta jurídica final...'})}\n\n"
-            
-            fecha_actual = get_date_utc_minus_6()
-            
-            # EL MISMO PROMPT EXACTO DE PRODUCCIÓN DE TU CHAT PREMIUM
-            final_prompt = f"""Fecha actual del sistema: {fecha_actual}
-Contexto geográfico principal: {country_code or 'General'}
-
-Toma en cuenta las fuentes proporcionadas. 
-IMPORTANTE: No uses '[INVESTIGACIÓN WEB RECIENTE]' como nombre de fuente. Extrae el nombre real del sitio web (ej: ONU, Amnistía, Wikipedia) desde la URL proporcionada.
-
-[CONTEXTO INTERNO DE JURISPRUDENCIA (RAG)]
-(⚠️ REGLA ESTRICTA: Tienes PROHIBIDO extraer o mostrar URLs de este bloque. Usa solo el conocimiento en texto plano).
-{rag_context}
-
-[INVESTIGACIÓN WEB RECIENTE (Perplexity)]
-(✅ REGLA ESTRICTA Y FILTRO GEOGRÁFICO: Debes usar las URLs de este bloque y convertirlas en hipervínculos Markdown. **EXCEPCIÓN CRÍTICA:** Si tu 'Contexto geográfico principal' es un país (ej. El Salvador) y la investigación web te trae leyes o instituciones de OTRO PAÍS distinto (ej. el BOE de España, Congreso de España), **TIENES ESTRICTAMENTE PROHIBIDO** usar y citar esas fuentes extranjeras. Limítate a usar fuentes del país correcto, doctrina general o de organismos internacionales).
-{web_context}
-
----
-INSTRUCCIÓN CRÍTICA DE ENLACES: 
-1. ¡NO USES NÚMEROS ENTRE CORCHETES COMO [1] O [2] PARA CITAR! El sistema los borrará automáticamente y perderemos la referencia.
-2. Tienes que leer la sección "FUENTES DE INTERNET" que te dio Perplexity y crear hipervínculos Markdown reales (ej: [Nombre de la Institución](URL_COMPLETA)).
-3. ES OBLIGATORIO que los enlaces válidos aparezcan incrustados dentro de los párrafos. Si todas las fuentes web fueron descartadas por ser de otro país irrelevante, básate solo en tu conocimiento y el RAG, y no pongas enlaces web.
-
-Pregunta del usuario: {body.prompt}
-⚠️ REGLA FINAL: Verifica la existencia real de lo que pide el usuario antes de responder. No asumas su premisa como verdadera.
-"""
-            # 👇 RESPUESTA COMPLETA, SIN CORTES (Genera todo, incluyendo <pida_questions>)
-            async for chunk in gemini_client.generate_streaming_response(
-                system_prompt=PIDA_SYSTEM_PROMPT,
-                prompt=final_prompt,
-                history=[],
-                trusted_urls=trusted_urls_set 
-            ):
-                yield f"data: {json.dumps({'text': chunk})}\n\n"
-                
-            yield f"data: {json.dumps({'event': 'done'})}\n\n"
-            
-        except Exception as e:
-            log.error(f"Error en teaser chat: {e}", exc_info=True)
-            yield f"data: {json.dumps({'error': 'Error procesando tu consulta inicial.'})}\n\n"
-
-    headers = { 
-        "Content-Type": "text/event-stream", 
-        "Cache-Control": "no-cache", 
-        "Connection": "keep-alive",
-        "X-Accel-Buffering": "no"
-    }
-    return StreamingResponse(restricted_stream_generator(), headers=headers)
 
 # 👇 NUEVO ENDPOINT DE VERIFICACIÓN DINÁMICO AÑADIDO
 @app.post("/send-verification-email", tags=["Security"])
@@ -1422,6 +1321,10 @@ async def start_research(
     
     jobs_db[job_id] = {
         "status": "PENDIENTE",
+        "status_message": "Inicializando tarea de investigación profunda...",
+        "steps": [],
+        "documents_consulted": [],
+        "websites_consulted": [],
         "result": None,
         "prompt": body.prompt,
         "user_email": user_email
