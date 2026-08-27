@@ -643,8 +643,8 @@ async def stream_chat_response_generator(chat_request: ChatRequest, country_code
         search_query = chat_request.prompt
         
         skip_perplexity = False
-        if chat_request.mode == "deep_research" and history_from_db:
-            yield create_sse_event({"event": "status", "message": "Evaluando necesidad de búsqueda web con Gemini 3.5..."})
+        if chat_request.mode == "chat" and history_from_db:
+            yield create_sse_event({"event": "status", "message": "Evaluando necesidad de búsqueda web..."})
             history_context = "\n".join([f"{msg.role.upper()}: {msg.content}" for msg in history_from_db[-4:]])
             perplexity_needed = await decide_if_perplexity_needed(chat_request.prompt, history_context)
             if not perplexity_needed:
