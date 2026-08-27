@@ -61,8 +61,6 @@ async def generate_streaming_response(
     # 👇 NUEVA CONFIGURACIÓN: El System Prompt y la Seguridad ahora van agrupados aquí
     generation_config = types.GenerateContentConfig(
         max_output_tokens=settings.MAX_OUTPUT_TOKENS,
-        temperature=settings.TEMPERATURE,
-        top_p=settings.TOP_P,
         system_instruction=system_prompt,
         safety_settings=[
             types.SafetySetting(category='HARM_CATEGORY_HATE_SPEECH', threshold='BLOCK_NONE'),
