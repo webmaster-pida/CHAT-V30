@@ -511,7 +511,7 @@ Regla 2: Si la pregunta pide leyes o datos nuevos, reformúlala incluyendo el pa
 Respuesta (sin comillas, sin explicaciones):"""
                 
                 response = await genai_client.aio.models.generate_content(
-                    model="gemini-3.7-flash",
+                    model="gemini-3.5-flash-lite",
                     contents=reformulation_prompt,
                     config=types.GenerateContentConfig(
                         max_output_tokens=20,
