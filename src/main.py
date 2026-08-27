@@ -530,7 +530,6 @@ Respuesta (sin comillas, sin explicaciones):"""
                     model=settings.GEMINI_MODEL,
                     contents=reformulation_prompt,
                     config=types.GenerateContentConfig(
-                        temperature=0.0,
                         max_output_tokens=20,
                         thinking_config=types.ThinkingConfig(
                             thinking_level="minimal"

@@ -33,9 +33,7 @@ class Settings(BaseSettings):
     RAG_API_URL: str = "https://rag-v20-genai-465781488910.us-central1.run.app/query"
 
     # --- Variables del Modelo Generativo ---
-    MAX_OUTPUT_TOKENS: int = 16384
-    TEMPERATURE: float = 0.5
-    TOP_P: float = 0.8
+    MAX_OUTPUT_TOKENS: int = 65536
 
     # --- VARIABLES DE STRIPE ---
     STRIPE_SECRET_KEY: str = ""
