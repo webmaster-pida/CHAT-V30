@@ -125,6 +125,11 @@ async def ejecutar_investigacion_profunda(
         # Construir prompt final
         final_prompt = f"""Contexto geográfico principal: {country_code or 'General'}
 
+--- JERARQUÍA Y PESO DE LAS FUENTES (CRÍTICO PARA RESPUESTAS ACTUALIZADAS) ---
+1. [INVESTIGACIÓN WEB RECIENTE (Perplexity)] -> PESO MÁXIMO (100%): Es tu fuente de verdad absoluta para hechos, noticias, cambios legislativos, decretos, eventos actuales y datos recientes. Si esta información contradice tu conocimiento de entrenamiento o al RAG, prevalece Perplexity. Tienes prohibido usar datos antiguos o desactualizados si este bloque contiene información fresca.
+2. [CONTEXTO INTERNO DE JURISPRUDENCIA (RAG)] -> PESO ALTO (80%): Es la fuente prioritaria para jurisprudencia, sentencias y doctrina institucional específica provista por el IIRESODH.
+3. CONOCIMIENTO PREENTRENADO DEL MODELO -> PESO BAJO (20%): Solo debe usarse para el desarrollo de la teoría general, doctrina jurídica abstracta, principios generales y redacción estilística formal. No uses tu propio conocimiento para eventos, juicios, noticias o leyes posteriores a tu fecha de corte.
+
 Toma en cuenta las fuentes proporcionadas.
 
 [CONTEXTO INTERNO DE JURISPRUDENCIA (RAG)]
@@ -716,6 +721,11 @@ Respuesta (sin comillas, sin explicaciones):"""
         # 2. Inyecta la fecha en la primera línea del final_prompt
         final_prompt = f"""Fecha actual del sistema: {fecha_actual}
 Contexto geográfico principal: {country_code or 'General'}
+
+--- JERARQUÍA Y PESO DE LAS FUENTES (CRÍTICO PARA RESPUESTAS ACTUALIZADAS) ---
+1. [INVESTIGACIÓN WEB RECIENTE (Perplexity)] -> PESO MÁXIMO (100%): Es tu fuente de verdad absoluta para hechos, noticias, cambios legislativos, decretos, eventos actuales y datos recientes. Si esta información contradice tu conocimiento de entrenamiento o al RAG, prevalece Perplexity. Tienes prohibido usar datos antiguos o desactualizados si este bloque contiene información fresca.
+2. [CONTEXTO INTERNO DE JURISPRUDENCIA (RAG)] -> PESO ALTO (80%): Es la fuente prioritaria para jurisprudencia, sentencias y doctrina institucional específica provista por el IIRESODH.
+3. CONOCIMIENTO PREENTRENADO DEL MODELO -> PESO BAJO (20%): Solo debe usarse para el desarrollo de la teoría general, doctrina jurídica abstracta, principios generales y redacción estilística formal. No uses tu propio conocimiento para eventos, juicios, noticias o leyes posteriores a tu fecha de corte.
 
 Toma en cuenta las fuentes proporcionadas. 
 IMPORTANTE: No uses '[INVESTIGACIÓN WEB RECIENTE]' como nombre de fuente. Extrae el nombre real del sitio web (ej: ONU, Amnistía, Wikipedia) desde la URL proporcionada.
