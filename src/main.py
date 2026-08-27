@@ -25,7 +25,6 @@ from src.config import settings, log
 from src.models.chat_models import ChatRequest, ChatMessage
 
 from src.modules import perplexity_client, gemini_client, rag_client, firestore_client
-from src.modules.deepresearch import ejecutar_investigacion_profunda
 from src.core.prompts import PIDA_SYSTEM_PROMPT
 from src.core.security import get_current_user
 
@@ -35,6 +34,133 @@ from google.genai import types
 
 # Inicializar cliente global para utilidades dentro de main.py
 genai_client = genai.Client(vertexai=True, project=settings.GOOGLE_CLOUD_PROJECT, location=settings.GOOGLE_CLOUD_LOCATION)
+
+# --- SISTEMA DE DECISIÓN MENOR (GEMINI 3.5 FLASH LITE) ---
+async def decide_if_perplexity_needed(prompt: str, history_context: str) -> bool:
+    """
+    Evalúa mediante gemini-3.5-flash-lite si la repregunta requiere búsqueda web en Perplexity
+    o si se puede responder con el contexto actual de la investigación y RAG.
+    """
+    decision_prompt = f"""
+Eres un asistente de decisiones rápidas para un sistema de investigación jurídica (PIDA).
+Debes evaluar si la nueva pregunta del usuario (la "repregunta") requiere buscar información fresca/nueva en la web a través de Perplexity, o si puede responderse usando la información ya generada en el historial de investigación previo, el conocimiento general del modelo o el RAG de jurisprudencia interno.
+
+Historial de la conversación reciente:
+{history_context}
+
+Nueva pregunta del usuario: {prompt}
+
+Instrucciones:
+- Responde ÚNICAMENTE con la palabra 'PERPLEXITY' si la pregunta requiere buscar nuevos datos de internet, noticias actuales o fuentes externas nuevas que no están en el historial.
+- Responde ÚNICAMENTE con la palabra 'LOCAL' si la pregunta es aclaratoria sobre el texto ya generado, si es conceptual de derecho general, o si se puede resolver con el conocimiento de jurisprudencia consolidada (RAG).
+
+Decisión (Responde con PERPLEXITY o LOCAL):"""
+    try:
+        response = await genai_client.aio.models.generate_content(
+            model=settings.MINOR_DECISION_MODEL,
+            contents=decision_prompt,
+            config=types.GenerateContentConfig(
+                max_output_tokens=10,
+                thinking_config=types.ThinkingConfig(
+                    thinking_level="minimal"
+                )
+            )
+        )
+        decision = response.text.strip().upper() if response.text else "PERPLEXITY"
+        log.info(f"Decisión de Perplexity para follow-up: {decision}")
+        return "PERPLEXITY" in decision
+    except Exception as e:
+        log.error(f"Error en decisión menor con gemini-3.5-flash-lite: {e}")
+        return True  # Fallback seguro
+
+async def ejecutar_investigacion_profunda(
+    job_id: str, 
+    prompt: str, 
+    user_email: str, 
+    country_code: str, 
+    jobs_db: Dict[str, Any]
+):
+    try:
+        jobs_db[job_id]["status"] = "PROCESANDO"
+        jobs_db[job_id]["status_message"] = "Iniciando análisis y recopilación de información..."
+        jobs_db[job_id]["steps"] = ["Iniciando investigación profunda..."]
+        log.info(f"Iniciando Deep Research job {job_id} para {user_email} en {country_code}")
+
+        # Ejecutar búsquedas en paralelo
+        jobs_db[job_id]["status_message"] = "Buscando en la base de datos interna de jurisprudencia (RAG) y en la web..."
+        jobs_db[job_id]["steps"].append("Consultando base de datos interna y fuentes web en paralelo...")
+
+        rag_task = rag_client.search_internal_documents(prompt)
+        perp_task = perplexity_client.get_perplexity_research(prompt)
+        
+        rag_res, perp_res = await asyncio.gather(rag_task, perp_task)
+        
+        rag_context = rag_res["text"]
+        web_context = perp_res["text"]
+        
+        documentos_consultados = rag_res["documents"]
+        citaciones_encontradas = perp_res["citations"]
+        
+        # Extraer nombres de dominio de las citaciones de Perplexity
+        sitios_web = list(set(urlparse(url).netloc for url in citaciones_encontradas if url))
+        
+        # Guardar metadatos en el job para su consumo directo por API / polling
+        jobs_db[job_id]["documents_consulted"] = documentos_consultados
+        jobs_db[job_id]["websites_consulted"] = sitios_web
+        
+        # Agregar al historial de pasos detallados
+        if documentos_consultados:
+            jobs_db[job_id]["steps"].append(f"Documentos consultados en RAG: {', '.join(documentos_consultados)}")
+        else:
+            jobs_db[job_id]["steps"].append("No se encontraron documentos internos aplicables.")
+            
+        if sitios_web:
+            jobs_db[job_id]["steps"].append(f"Fuentes web encontradas: {', '.join(sitios_web)}")
+        else:
+            jobs_db[job_id]["steps"].append("No se encontraron fuentes web adicionales.")
+
+        jobs_db[job_id]["status_message"] = "Procesando, correlacionando y redactando el informe con Gemini..."
+        jobs_db[job_id]["steps"].append("Enviando el contexto completo al modelo de IA para la síntesis jurídica...")
+
+        # Construir prompt final
+        final_prompt = f"""Contexto geográfico principal: {country_code or 'General'}
+
+Toma en cuenta las fuentes proporcionadas.
+
+[CONTEXTO INTERNO DE JURISPRUDENCIA (RAG)]
+{rag_context}
+
+[INVESTIGACIÓN WEB RECIENTE (Perplexity)]
+{web_context}
+
+Pregunta del usuario: {prompt}
+"""
+
+        generation_config = types.GenerateContentConfig(
+            max_output_tokens=65536,
+            system_instruction=PIDA_SYSTEM_PROMPT,
+            thinking_config=types.ThinkingConfig(
+                thinking_level="high"
+            )
+        )
+
+        response = await genai_client.aio.models.generate_content(
+            model=settings.GEMINI_MODEL,
+            contents=final_prompt,
+            config=generation_config
+        )
+
+        jobs_db[job_id]["result"] = response.text
+        jobs_db[job_id]["status"] = "COMPLETADO"
+        jobs_db[job_id]["status_message"] = "Investigación completada con éxito."
+        jobs_db[job_id]["steps"].append("Informe redactado e investigación completada.")
+        log.info(f"Deep Research job {job_id} completado con éxito.")
+
+    except Exception as e:
+        log.error(f"Error en Deep Research job {job_id}: {e}", exc_info=True)
+        jobs_db[job_id]["status"] = "ERROR"
+        jobs_db[job_id]["status_message"] = f"Error durante la investigación: {str(e)}"
+        jobs_db[job_id]["result"] = str(e)
 
 # --- MODELOS DE PETICIÓN ---
 class VerificationRequest(BaseModel):
@@ -499,7 +625,7 @@ async def stream_chat_response_generator(chat_request: ChatRequest, country_code
     try:
         history_from_db = await firestore_client.get_conversation_messages(user_id, convo_id)
         
-        user_message = ChatMessage(role="user", content=chat_request.prompt)
+        user_message = ChatMessage(role="user", content=chat_request.prompt, mode=chat_request.mode)
         asyncio.create_task(firestore_client.add_message_to_conversation(user_id, convo_id, user_message))
         
         yield create_sse_event({"event": "status", "message": "Iniciando..."})
@@ -507,7 +633,17 @@ async def stream_chat_response_generator(chat_request: ChatRequest, country_code
         history_for_gemini = gemini_client.prepare_history_for_genai(history_from_db)
         
         search_query = chat_request.prompt
-        if history_from_db:
+        
+        skip_perplexity = False
+        if chat_request.mode == "deep_research" and history_from_db:
+            yield create_sse_event({"event": "status", "message": "Evaluando necesidad de búsqueda web con Gemini 3.5..."})
+            history_context = "\n".join([f"{msg.role.upper()}: {msg.content}" for msg in history_from_db[-4:]])
+            perplexity_needed = await decide_if_perplexity_needed(chat_request.prompt, history_context)
+            if not perplexity_needed:
+                skip_perplexity = True
+                yield create_sse_event({"event": "status", "message": "Usando contexto e información local..."})
+
+        if history_from_db and not skip_perplexity:
             yield create_sse_event({"event": "status", "message": "Contextualizando la búsqueda..."})
             try:
                 recent_history = history_from_db[-4:] 
@@ -527,7 +663,7 @@ Regla 2: Si la pregunta pide leyes o datos nuevos, reformúlala incluyendo el pa
 Respuesta (sin comillas, sin explicaciones):"""
                 
                 response = await genai_client.aio.models.generate_content(
-                    model=settings.GEMINI_MODEL,
+                    model=settings.MINOR_DECISION_MODEL,
                     contents=reformulation_prompt,
                     config=types.GenerateContentConfig(
                         max_output_tokens=20,
@@ -551,17 +687,17 @@ Respuesta (sin comillas, sin explicaciones):"""
         web_context = ""
 
         if "SKIP_SEARCH" not in search_query.upper():
-            yield create_sse_event({"event": "status", "message": "Analizando fuentes y biblioteca privada..."})
-            
-            rag_task = rag_client.search_internal_documents(search_query)
-            perp_task = perplexity_client.get_perplexity_research(search_query)
-            
-            rag_res, perp_res = await asyncio.gather(rag_task, perp_task)
-            rag_context = rag_res["text"]
-            web_context = perp_res["text"]
-            rag_res, perp_res = await asyncio.gather(rag_task, perp_task)
-            rag_context = rag_res["text"]
-            web_context = perp_res["text"]
+            if skip_perplexity:
+                yield create_sse_event({"event": "status", "message": "Analizando biblioteca privada..."})
+                rag_res = await rag_client.search_internal_documents(search_query)
+                rag_context = rag_res["text"]
+            else:
+                yield create_sse_event({"event": "status", "message": "Analizando fuentes y biblioteca privada..."})
+                rag_task = rag_client.search_internal_documents(search_query)
+                perp_task = perplexity_client.get_perplexity_research(search_query)
+                rag_res, perp_res = await asyncio.gather(rag_task, perp_task)
+                rag_context = rag_res["text"]
+                web_context = perp_res["text"]
             
             yield create_sse_event({"event": "status", "message": "Sintetizando y correlacionando fuentes..."})
         
@@ -600,17 +736,20 @@ Pregunta del usuario: {chat_request.prompt}
         
         full_response_text = ""
         
+        thinking_level = "high" if chat_request.mode == "deep_research" else "medium"
+        
         async for chunk in gemini_client.generate_streaming_response(
             system_prompt=PIDA_SYSTEM_PROMPT,
             prompt=final_prompt,
             history=history_for_gemini,
-            trusted_urls=trusted_urls_set 
+            trusted_urls=trusted_urls_set,
+            thinking_level=thinking_level
         ):
             yield create_sse_event({'text': chunk})
             full_response_text += chunk
 
         if full_response_text:
-            model_message = ChatMessage(role="model", content=full_response_text)
+            model_message = ChatMessage(role="model", content=full_response_text, mode=chat_request.mode)
             await firestore_client.add_message_to_conversation(user_id, convo_id, model_message)
 
         yield create_sse_event({'event': 'done'})

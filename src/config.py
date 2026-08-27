@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     GOOGLE_CLOUD_PROJECT: str = "pida-ai-v20"
     GOOGLE_CLOUD_LOCATION: str = "us"
     GEMINI_MODEL: str = "gemini-3.7-flash"
+    MINOR_DECISION_MODEL: str = "gemini-3.5-flash-lite"
     
     # URL del RAG
     RAG_API_URL: str = "https://rag-v20-genai-465781488910.us-central1.run.app/query"

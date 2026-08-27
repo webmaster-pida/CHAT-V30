@@ -46,7 +46,8 @@ async def generate_streaming_response(
     system_prompt: str, 
     prompt: str, 
     history: List[types.Content],
-    trusted_urls: Set[str] = set()
+    trusted_urls: Set[str] = set(),
+    thinking_level: str = "medium"
 ) -> AsyncGenerator[str, None]:
     
     if not client:
@@ -63,7 +64,7 @@ async def generate_streaming_response(
         max_output_tokens=settings.MAX_OUTPUT_TOKENS,
         system_instruction=system_prompt,
         thinking_config=types.ThinkingConfig(
-            thinking_level="medium"
+            thinking_level=thinking_level
         ),
         safety_settings=[
             types.SafetySetting(category='HARM_CATEGORY_HATE_SPEECH', threshold='BLOCK_NONE'),
