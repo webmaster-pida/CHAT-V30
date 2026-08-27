@@ -91,7 +91,7 @@ async def ejecutar_investigacion_profunda(
         jobs_db[job_id]["steps"].append("Consultando base de datos interna y fuentes web en paralelo...")
 
         rag_task = rag_client.search_internal_documents(prompt)
-        perp_task = perplexity_client.get_perplexity_research(prompt)
+        perp_task = perplexity_client.get_perplexity_research(prompt, model="sonar-pro")
         
         rag_res, perp_res = await asyncio.gather(rag_task, perp_task)
         
@@ -697,7 +697,8 @@ Respuesta (sin comillas, sin explicaciones):"""
             else:
                 yield create_sse_event({"event": "status", "message": "Analizando fuentes y biblioteca privada..."})
                 rag_task = rag_client.search_internal_documents(search_query)
-                perp_task = perplexity_client.get_perplexity_research(search_query)
+                perp_model = "sonar-pro" if chat_request.mode == "deep_research" else "sonar"
+                perp_task = perplexity_client.get_perplexity_research(search_query, model=perp_model)
                 rag_res, perp_res = await asyncio.gather(rag_task, perp_task)
                 rag_context = rag_res["text"]
                 web_context = perp_res["text"]

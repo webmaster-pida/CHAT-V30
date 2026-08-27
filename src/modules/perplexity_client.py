@@ -34,15 +34,15 @@ async def close_http_client():
         await _http_client.aclose()
 
 
-async def get_perplexity_research(query: str) -> dict:
+async def get_perplexity_research(query: str, model: str | None = None) -> dict:
     url = "https://api.perplexity.ai/chat/completions"
     
     enhanced_query = f"Busca rápidamente datos concretos, hechos y URLs institucionales sobre: '{query}'. Sé muy conciso, no analices, solo entrega la información cruda y los enlaces."
 
+    chosen_model = model if model else settings.PERPLEXITY_MODEL
+
     payload = {
-        # 2. ASEGÚRATE DE USAR EL MODELO RÁPIDO
-        # Verifica que settings.PERPLEXITY_MODEL sea 'sonar-small-online' o el más ligero.
-        "model": settings.PERPLEXITY_MODEL, 
+        "model": chosen_model, 
         "messages": [
             {
                 "role": "system", 
