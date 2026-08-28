@@ -881,14 +881,37 @@ Respuesta (sin comillas, sin explicaciones):"""
                 yield create_sse_event({"event": "status", "message": "Analizando biblioteca privada..."})
                 rag_res = await rag_client.search_internal_documents(search_query)
                 rag_context = rag_res["text"]
+                
+                # Solo inyectar documentos si estamos en Investigación Profunda
+                if chat_request.mode == "deep_research":
+                    documentos = rag_res.get("documents", [])
+                    if documentos:
+                        docs_str = ", ".join(documentos)
+                        yield create_sse_event({"event": "status", "message": f"Documentos analizados: {docs_str}"})
+                    
             else:
                 yield create_sse_event({"event": "status", "message": "Analizando fuentes y biblioteca privada..."})
                 rag_task = rag_client.search_internal_documents(search_query)
                 perp_model = "sonar-pro" if chat_request.mode == "deep_research" else "sonar"
                 perp_task = perplexity_client.get_perplexity_research(search_query, model=perp_model)
                 rag_res, perp_res = await asyncio.gather(rag_task, perp_task)
+                
                 rag_context = rag_res["text"]
                 web_context = perp_res["text"]
+                
+                # Solo inyectar documentos y sitios web si estamos en Investigación Profunda
+                if chat_request.mode == "deep_research":
+                    documentos = rag_res.get("documents", [])
+                    citaciones = perp_res.get("citations", [])
+                    sitios = list(set(urlparse(url).netloc for url in citaciones if url))
+                    
+                    if documentos:
+                        docs_str = ", ".join(documentos)
+                        yield create_sse_event({"event": "status", "message": f"Documentos RAG: {docs_str}"})
+                    
+                    if sitios:
+                        sitios_str = ", ".join(sitios)
+                        yield create_sse_event({"event": "status", "message": f"Fuentes Web: {sitios_str}"})
             
             yield create_sse_event({"event": "status", "message": "Sintetizando y correlacionando fuentes..."})
         
