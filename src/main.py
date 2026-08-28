@@ -818,13 +818,13 @@ async def stream_chat_response_generator(chat_request: ChatRequest, country_code
         user_message = ChatMessage(role="user", content=chat_request.prompt, mode=chat_request.mode)
         asyncio.create_task(firestore_client.add_message_to_conversation(user_id, convo_id, user_message))
         
-        yield create_sse_event({"event": "status", "message": "Iniciando..."})
-        
         history_for_gemini = gemini_client.prepare_history_for_genai(history_from_db)
         
         search_query = chat_request.prompt
         status_history = []
-        status_history.append("Iniciando...")
+        msg_inicial = "Ejecutando Investigación Profunda..." if chat_request.mode == "deep_research" else "Iniciando..."
+        yield create_sse_event({"event": "status", "message": msg_inicial})
+        status_history.append(msg_inicial)
         
         skip_perplexity = False
         if chat_request.mode == "chat" and history_from_db:
@@ -894,12 +894,13 @@ Respuesta (sin comillas, sin explicaciones):"""
                 
                 if chat_request.mode == "deep_research":
                     docs = rag_res.get("documents", [])
+                    documentos_usados = docs
                     if docs:
                         msg_bib = "Documentos consultados en Biblioteca Privada:"
                         yield create_sse_event({"event": "status", "message": msg_bib})
                         status_history.append(msg_bib)
                         for doc in docs:
-                            doc_msg = f"  - {doc}"
+                            doc_msg = f"  • {doc}"
                             yield create_sse_event({"event": "status", "message": doc_msg})
                             status_history.append(doc_msg)
                     
@@ -918,23 +919,25 @@ Respuesta (sin comillas, sin explicaciones):"""
                 
                 if chat_request.mode == "deep_research":
                     docs = rag_res.get("documents", [])
+                    documentos_usados = docs
                     if docs:
                         msg_bib = "Documentos consultados en Biblioteca Privada:"
                         yield create_sse_event({"event": "status", "message": msg_bib})
                         status_history.append(msg_bib)
                         for doc in docs:
-                            doc_msg = f"  - {doc}"
+                            doc_msg = f"  • {doc}"
                             yield create_sse_event({"event": "status", "message": doc_msg})
                             status_history.append(doc_msg)
                     
                     citaciones = perp_res.get("citations", [])
                     sitios_unicos = list(set(urlparse(url).netloc for url in citaciones if url))
+                    sitios_usados = sitios_unicos
                     if sitios_unicos:
                         msg_web = "Sitios web consultados:"
                         yield create_sse_event({"event": "status", "message": msg_web})
                         status_history.append(msg_web)
                         for sitio in sitios_unicos:
-                            web_msg = f"  - {sitio}"
+                            web_msg = f"  • {sitio}"
                             yield create_sse_event({"event": "status", "message": web_msg})
                             status_history.append(web_msg)
             
@@ -1221,8 +1224,17 @@ async def download_chat(
                 def status_log_replacer(match):
                     inner_text = match.group(1).strip()
                     lines = inner_text.split('\n')
-                    formatted = "\n".join([f"✓ {line}" for line in lines if line.strip()])
-                    return f"\n\n--- Progreso de la Investigación ---\n{formatted}\n------------------------------------\n\n"
+                    formatted = []
+                    for line in lines:
+                        if not line.strip():
+                            continue
+                        if re.match(r'^\s*•', line):
+                            clean_item = re.sub(r'^\s*•\s*', '', line)
+                            formatted.append(f"    • {clean_item}")
+                        else:
+                            formatted.append(f"✓ {line.strip()}")
+                    formatted_str = "\n".join(formatted)
+                    return f"\n\n--- Progreso de la Investigación ---\n{formatted_str}\n------------------------------------\n\n"
                 
                 content = re.sub(r"&lt;pida_status_log&gt;(.*?)&lt;/pida_status_log&gt;", status_log_replacer, content, flags=re.DOTALL)
                 
