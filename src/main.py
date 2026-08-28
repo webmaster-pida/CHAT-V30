@@ -875,6 +875,8 @@ Respuesta (sin comillas, sin explicaciones):"""
 
         rag_context = ""
         web_context = ""
+        documentos_usados = []
+        sitios_usados = []
 
         if "SKIP_SEARCH" not in search_query.upper():
             if skip_perplexity:
@@ -882,12 +884,11 @@ Respuesta (sin comillas, sin explicaciones):"""
                 rag_res = await rag_client.search_internal_documents(search_query)
                 rag_context = rag_res["text"]
                 
-                # Solo inyectar documentos si estamos en Investigación Profunda
                 if chat_request.mode == "deep_research":
-                    documentos = rag_res.get("documents", [])
-                    if documentos:
-                        docs_str = ", ".join(documentos)
-                        yield create_sse_event({"event": "status", "message": f"Documentos analizados: {docs_str}"})
+                    documentos_usados = rag_res.get("documents", [])
+                    if documentos_usados:
+                        docs_str = ", ".join(documentos_usados)
+                        yield create_sse_event({"event": "status", "message": f"Biblioteca Privada: {docs_str}"})
                     
             else:
                 yield create_sse_event({"event": "status", "message": "Analizando fuentes y biblioteca privada..."})
@@ -899,19 +900,18 @@ Respuesta (sin comillas, sin explicaciones):"""
                 rag_context = rag_res["text"]
                 web_context = perp_res["text"]
                 
-                # Solo inyectar documentos y sitios web si estamos en Investigación Profunda
                 if chat_request.mode == "deep_research":
-                    documentos = rag_res.get("documents", [])
+                    documentos_usados = rag_res.get("documents", [])
                     citaciones = perp_res.get("citations", [])
-                    sitios = list(set(urlparse(url).netloc for url in citaciones if url))
+                    sitios_usados = list(set(urlparse(url).netloc for url in citaciones if url))
                     
-                    if documentos:
-                        docs_str = ", ".join(documentos)
-                        yield create_sse_event({"event": "status", "message": f"Documentos RAG: {docs_str}"})
+                    if documentos_usados:
+                        docs_str = ", ".join(documentos_usados)
+                        yield create_sse_event({"event": "status", "message": f"Biblioteca Privada: {docs_str}"})
                     
-                    if sitios:
-                        sitios_str = ", ".join(sitios)
-                        yield create_sse_event({"event": "status", "message": f"Fuentes Web: {sitios_str}"})
+                    if sitios_usados:
+                        sitios_str = ", ".join(sitios_usados)
+                        yield create_sse_event({"event": "status", "message": f"Web: {sitios_str}"})
             
             yield create_sse_event({"event": "status", "message": "Sintetizando y correlacionando fuentes..."})
         
@@ -965,6 +965,18 @@ Pregunta del usuario: {chat_request.prompt}
         
         thinking_level = "high" if chat_request.mode == "deep_research" else "medium"
         
+        # Inyectar fuentes en la respuesta para el historial y efecto streaming en UI
+        if chat_request.mode == "deep_research" and (documentos_usados or sitios_usados):
+            injection = "&lt;pida_research_details&gt;\n"
+            if documentos_usados:
+                injection += f"**Biblioteca Privada:** {', '.join(documentos_usados)}\n\n"
+            if sitios_usados:
+                injection += f"**Web:** {', '.join(sitios_usados)}\n\n"
+            injection += "&lt;/pida_research_details&gt;\n\n"
+            
+            yield create_sse_event({'text': injection})
+            full_response_text += injection
+
         async for chunk in gemini_client.generate_streaming_response(
             system_prompt=system_prompt_mode,
             prompt=final_prompt,
@@ -1163,6 +1175,13 @@ async def download_chat(
             
             if msg.role == "model":
                 content = content.replace("_Fin del análisis._", "")
+                
+                # Formatear el cuadro de investigación para el documento descargable
+                def research_replacer(match):
+                    inner_text = match.group(1).strip()
+                    return f"\n\n--- Fuentes Consultadas ---\n{inner_text}\n---------------------------\n\n"
+                
+                content = re.sub(r"&lt;pida_research_details&gt;(.*?)&lt;/pida_research_details&gt;", research_replacer, content, flags=re.DOTALL)
                 
                 if "<pida_questions>" in content and "</pida_questions>" in content:
                     def replacer(match):
