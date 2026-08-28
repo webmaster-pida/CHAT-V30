@@ -215,16 +215,21 @@ Consulta original: "{prompt}"
 Informe preliminar:
 {initial_result}
 
+--- DIRECTRIZ DE VANGUARDIA DOCTRINAL Y ACTUALIZACIÓN (ESTRICTO) ---
+Evalúa de forma rigurosa y crítica si el informe preliminar se ha limitado a explicaciones tradicionales, clásicas, históricas o elementales del tema consultado.
+Cualquier tema jurídico (sea civil, penal, constitucional, derechos humanos, de patentes, administrativo, etc.) cuenta con debates de vanguardia, reformas de última hora, el estado del arte contemporáneo o discusiones emergentes (ej. su impacto en entornos de red, inteligencia artificial, biotecnología, o nuevas corrientes de interpretación progresista).
+Si el informe preliminar carece de este enfoque contemporáneo y actualizado o de las discusiones doctrinales más recientes del tema, DEBES marcar "completo": false. En "motivo" explica detalladamente qué debates actuales o novedades teóricas se han omitido, y en "consulta_adicional" formula términos de búsqueda específicos dirigidos a extraer ese conocimiento de vanguardia de internet.
+
 Responde estrictamente en formato JSON válido con los siguientes campos:
-- "completo": un booleano (true si el informe responde exhaustiva y completamente con jurisprudencia y actualidad; false si le falta información, requiere datos más actualizados, omite algún punto o carece de profundidad).
+- "completo": un booleano (true si el informe responde de manera exhaustiva, profunda y aborda las discusiones doctrinales, fácticas y de vanguardia contemporánea más actuales de la materia; false si le falta información contemporánea, omite el estado del arte del tema, carece de profundidad de última generación o requiere datos de última hora).
 - "motivo": un texto con la razón/vacío identificado si 'completo' es false (vacío si es true).
 - "consulta_adicional": una frase o consulta corta específica de búsqueda (en español) para Perplexity/RAG que ayude a obtener los datos faltantes o actualizados si 'completo' es false (vacío si es true).
 
-Ejemplo de respuesta si falta información:
+Ejemplo de respuesta si falta información contemporánea o de vanguardia:
 {{
   "completo": false,
-  "motivo": "Falta mencionar las últimas reformas procesales constitucionales de El Salvador de 2024.",
-  "consulta_adicional": "reformas procesales constitucionales el salvador 2024"
+  "motivo": "El informe preliminar solo aborda aspectos clásicos e históricos de la institución legal consultada, omitiendo discusiones doctrinales recientes sobre su regulación en la era digital y su implicación frente a la inteligencia artificial.",
+  "consulta_adicional": "evolucion doctrina debates contemporaneos de [tema consultado] y tecnologias emergentes"
 }}
 """
         try:
