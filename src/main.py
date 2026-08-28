@@ -880,8 +880,6 @@ Respuesta (sin comillas, sin explicaciones):"""
 
         rag_context = ""
         web_context = ""
-        documentos_usados = []
-        sitios_usados = []
 
         if "SKIP_SEARCH" not in search_query.upper():
             if skip_perplexity:
@@ -894,7 +892,6 @@ Respuesta (sin comillas, sin explicaciones):"""
                 
                 if chat_request.mode == "deep_research":
                     docs = rag_res.get("documents", [])
-                    documentos_usados = docs
                     if docs:
                         msg_bib = "Documentos consultados en Biblioteca Privada:"
                         yield create_sse_event({"event": "status", "message": msg_bib})
@@ -919,7 +916,6 @@ Respuesta (sin comillas, sin explicaciones):"""
                 
                 if chat_request.mode == "deep_research":
                     docs = rag_res.get("documents", [])
-                    documentos_usados = docs
                     if docs:
                         msg_bib = "Documentos consultados en Biblioteca Privada:"
                         yield create_sse_event({"event": "status", "message": msg_bib})
@@ -931,7 +927,6 @@ Respuesta (sin comillas, sin explicaciones):"""
                     
                     citaciones = perp_res.get("citations", [])
                     sitios_unicos = list(set(urlparse(url).netloc for url in citaciones if url))
-                    sitios_usados = sitios_unicos
                     if sitios_unicos:
                         msg_web = "Sitios web consultados:"
                         yield create_sse_event({"event": "status", "message": msg_web})
@@ -996,18 +991,6 @@ Pregunta del usuario: {chat_request.prompt}
         
         thinking_level = "high" if chat_request.mode == "deep_research" else "medium"
         
-        # Inyectar fuentes en la respuesta para el historial y efecto streaming en UI
-        if chat_request.mode == "deep_research" and (documentos_usados or sitios_usados):
-            injection = "<pida_research_details>\n"
-            if documentos_usados:
-                injection += f"**Biblioteca Privada:** {', '.join(documentos_usados)}\n\n"
-            if sitios_usados:
-                injection += f"**Web:** {', '.join(sitios_usados)}\n\n"
-            injection += "</pida_research_details>\n\n"
-            
-            yield create_sse_event({'text': injection})
-            full_response_text += injection
-
         # Inyectar el log de estados en la respuesta para el historial y efecto streaming en UI
         if chat_request.mode == "deep_research" and status_history:
             injection = "<pida_status_log>\n" + "\n".join(status_history) + "\n</pida_status_log>\n\n"
