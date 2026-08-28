@@ -803,14 +803,19 @@ async def refund_chat_credit(user_id: str):
 # --- GENERADOR STREAMING (EL ORQUESTADOR MÁGICO) ---
 async def stream_chat_response_generator(chat_request: ChatRequest, country_code: str | None, user: Dict[str, Any], convo_id: str):
     user_id = user['uid']
+    def create_sse_event(data: dict) -> str:
+        payload = data.copy()
+        if "id" not in payload:
+            payload["id"] = str(uuid.uuid4())
+        if "timestamp" not in payload:
+            payload["timestamp"] = datetime.now(timezone.utc).isoformat()
+        return f"data: {json.dumps(payload)}\n\n"
+
     try:
         await verify_active_subscription(user) 
     except HTTPException as e:
-        yield f"data: {json.dumps({'error': e.detail})}\n\n"
+        yield create_sse_event({'error': e.detail})
         return
-    
-    def create_sse_event(data: dict) -> str:
-        return f"data: {json.dumps(data)}\n\n"
 
     try:
         history_from_db = await firestore_client.get_conversation_messages(user_id, convo_id)
@@ -1150,8 +1155,7 @@ Pregunta del usuario: {chat_request.prompt}
 
     except Exception as e:
         log.error(f"Error crítico streaming convo {convo_id}: {e}", exc_info=True)
-        error_message = json.dumps({"error": "Ocurrió un error interno al generar la respuesta."})
-        yield f"data: {error_message}\n\n"
+        yield create_sse_event({"error": "Ocurrió un error interno al generar la respuesta."})
 
 # --- ENDPOINTS ---
 
