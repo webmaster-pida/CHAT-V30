@@ -823,18 +823,23 @@ async def stream_chat_response_generator(chat_request: ChatRequest, country_code
         history_for_gemini = gemini_client.prepare_history_for_genai(history_from_db)
         
         search_query = chat_request.prompt
+        status_history = []
+        status_history.append("Iniciando...")
         
         skip_perplexity = False
         if chat_request.mode == "chat" and history_from_db:
             yield create_sse_event({"event": "status", "message": "Evaluando necesidad de búsqueda web..."})
+            status_history.append("Evaluando necesidad de búsqueda web...")
             history_context = "\n".join([f"{msg.role.upper()}: {msg.content}" for msg in history_from_db[-4:]])
             perplexity_needed = await decide_if_perplexity_needed(chat_request.prompt, history_context)
             if not perplexity_needed:
                 skip_perplexity = True
                 yield create_sse_event({"event": "status", "message": "Usando contexto e información local..."})
+                status_history.append("Usando contexto e información local...")
 
         if history_from_db and not skip_perplexity:
             yield create_sse_event({"event": "status", "message": "Contextualizando la búsqueda..."})
+            status_history.append("Contextualizando la búsqueda...")
             try:
                 recent_history = history_from_db[-4:] 
                 context_text = "\n".join([f"{msg.role.upper()}: {msg.content}" for msg in recent_history])
@@ -880,18 +885,24 @@ Respuesta (sin comillas, sin explicaciones):"""
 
         if "SKIP_SEARCH" not in search_query.upper():
             if skip_perplexity:
-                yield create_sse_event({"event": "status", "message": "Analizando biblioteca privada..."})
+                msg = "Analizando biblioteca privada..."
+                yield create_sse_event({"event": "status", "message": msg})
+                status_history.append(msg)
+                
                 rag_res = await rag_client.search_internal_documents(search_query)
                 rag_context = rag_res["text"]
                 
                 if chat_request.mode == "deep_research":
-                    documentos_usados = rag_res.get("documents", [])
-                    if documentos_usados:
-                        docs_str = ", ".join(documentos_usados)
-                        yield create_sse_event({"event": "status", "message": f"Biblioteca Privada: {docs_str}"})
+                    for doc in rag_res.get("documents", []):
+                        doc_msg = f"Biblioteca Privada: {doc}"
+                        yield create_sse_event({"event": "status", "message": doc_msg})
+                        status_history.append(doc_msg)
                     
             else:
-                yield create_sse_event({"event": "status", "message": "Analizando fuentes y biblioteca privada..."})
+                msg = "Analizando fuentes y biblioteca privada..."
+                yield create_sse_event({"event": "status", "message": msg})
+                status_history.append(msg)
+                
                 rag_task = rag_client.search_internal_documents(search_query)
                 perp_model = "sonar-pro" if chat_request.mode == "deep_research" else "sonar"
                 perp_task = perplexity_client.get_perplexity_research(search_query, model=perp_model)
@@ -901,24 +912,27 @@ Respuesta (sin comillas, sin explicaciones):"""
                 web_context = perp_res["text"]
                 
                 if chat_request.mode == "deep_research":
-                    documentos_usados = rag_res.get("documents", [])
+                    for doc in rag_res.get("documents", []):
+                        doc_msg = f"Biblioteca Privada: {doc}"
+                        yield create_sse_event({"event": "status", "message": doc_msg})
+                        status_history.append(doc_msg)
+                    
                     citaciones = perp_res.get("citations", [])
-                    sitios_usados = list(set(urlparse(url).netloc for url in citaciones if url))
-                    
-                    if documentos_usados:
-                        docs_str = ", ".join(documentos_usados)
-                        yield create_sse_event({"event": "status", "message": f"Biblioteca Privada: {docs_str}"})
-                    
-                    if sitios_usados:
-                        sitios_str = ", ".join(sitios_usados)
-                        yield create_sse_event({"event": "status", "message": f"Web: {sitios_str}"})
+                    sitios_unicos = list(set(urlparse(url).netloc for url in citaciones if url))
+                    for sitio in sitios_unicos:
+                        web_msg = f"Web: {sitio}"
+                        yield create_sse_event({"event": "status", "message": web_msg})
+                        status_history.append(web_msg)
             
-            yield create_sse_event({"event": "status", "message": "Sintetizando y correlacionando fuentes..."})
+            msg = "Sintetizando y correlacionando fuentes..."
+            yield create_sse_event({"event": "status", "message": msg})
+            status_history.append(msg)
         
         combined_context = f"{rag_context}\n{web_context}"
         trusted_urls_set = set(re.findall(r'https?://[^\s\)\],>]+', combined_context))
         
         yield create_sse_event({"event": "status", "message": "Formulando respuesta jurídica final..."})
+        status_history.append("Formulando respuesta jurídica final...")
         
         # 1. Se obtiene la fecha actual usando función existente
         fecha_actual = get_date_utc_minus_6()
@@ -974,6 +988,12 @@ Pregunta del usuario: {chat_request.prompt}
                 injection += f"**Web:** {', '.join(sitios_usados)}\n\n"
             injection += "</pida_research_details>\n\n"
             
+            yield create_sse_event({'text': injection})
+            full_response_text += injection
+
+        # Inyectar el log de estados en la respuesta para el historial y efecto streaming en UI
+        if chat_request.mode == "deep_research" and status_history:
+            injection = "<pida_status_log>\n" + "\n".join(status_history) + "\n</pida_status_log>\n\n"
             yield create_sse_event({'text': injection})
             full_response_text += injection
 
@@ -1182,6 +1202,15 @@ async def download_chat(
                     return f"\n\n--- Fuentes Consultadas ---\n{inner_text}\n---------------------------\n\n"
                 
                 content = re.sub(r"&lt;pida_research_details&gt;(.*?)&lt;/pida_research_details&gt;", research_replacer, content, flags=re.DOTALL)
+                
+                # Limpiar el cuadro de estados para el documento descargable
+                def status_log_replacer(match):
+                    inner_text = match.group(1).strip()
+                    lines = inner_text.split('\n')
+                    formatted = "\n".join([f"✓ {line}" for line in lines if line.strip()])
+                    return f"\n\n--- Progreso de la Investigación ---\n{formatted}\n------------------------------------\n\n"
+                
+                content = re.sub(r"&lt;pida_status_log&gt;(.*?)&lt;/pida_status_log&gt;", status_log_replacer, content, flags=re.DOTALL)
                 
                 if "<pida_questions>" in content and "</pida_questions>" in content:
                     def replacer(match):
