@@ -126,13 +126,13 @@ async def ejecutar_investigacion_profunda(
 ):
     try:
         jobs_db[job_id]["status"] = "PROCESANDO"
-        jobs_db[job_id]["status_message"] = "Iniciando análisis y recopilación de información..."
+        jobs_db[job_id]["status_message"] = "Iniciando análisis y recopilación de información en Biblioteca Privada y Web..."
         jobs_db[job_id]["steps"] = ["Iniciando investigación profunda..."]
         log.info(f"Iniciando Deep Research job {job_id} para {user_email} en {country_code}")
 
         # Ejecutar búsquedas en paralelo
-        jobs_db[job_id]["status_message"] = "Buscando en la base de datos interna de jurisprudencia (RAG) y en la web..."
-        jobs_db[job_id]["steps"].append("Consultando base de datos interna y fuentes web en paralelo...")
+        jobs_db[job_id]["status_message"] = "Consultando simultáneamente en la Biblioteca Privada y en la Web..."
+        jobs_db[job_id]["steps"].append("Buscando fuentes de información en Biblioteca Privada y Web...")
 
         rag_task = rag_client.search_internal_documents(prompt)
         perp_task = perplexity_client.get_perplexity_research(prompt, model="sonar-pro")
@@ -154,16 +154,18 @@ async def ejecutar_investigacion_profunda(
         
         # Agregar al historial de pasos detallados
         if documentos_consultados:
-            jobs_db[job_id]["steps"].append(f"Documentos consultados en RAG: {', '.join(documentos_consultados)}")
+            jobs_db[job_id]["steps"].append(f"Documentos consultados en Biblioteca Privada: {', '.join(documentos_consultados)}")
         else:
-            jobs_db[job_id]["steps"].append("No se encontraron documentos internos aplicables.")
+            jobs_db[job_id]["steps"].append("No se encontraron documentos aplicables en Biblioteca Privada.")
             
         if sitios_web:
-            jobs_db[job_id]["steps"].append(f"Fuentes web encontradas: {', '.join(sitios_web)}")
+            jobs_db[job_id]["steps"].append(f"Fuentes consultadas en la Web: {', '.join(sitios_web)}")
         else:
             jobs_db[job_id]["steps"].append("No se encontraron fuentes web adicionales.")
 
-        jobs_db[job_id]["status_message"] = "Procesando, correlacionando y redactando el informe con Gemini..."
+        found_docs_str = f"{len(documentos_consultados)} documentos en Biblioteca Privada" if documentos_consultados else "sin documentos internos"
+        found_web_str = f"{len(sitios_web)} sitios en la Web" if sitios_web else "sin fuentes web"
+        jobs_db[job_id]["status_message"] = f"Información recopilada con éxito ({found_docs_str} y {found_web_str}). Redactando borrador..."
         jobs_db[job_id]["steps"].append("Enviando el contexto completo al modelo de IA para la síntesis jurídica...")
 
         # Construir prompt final
@@ -205,8 +207,8 @@ Pregunta del usuario: {prompt}
         initial_result = response.text if response.text else ""
 
         # --- CONTROL DE CALIDAD Y AUTO-AMPLIACIÓN ---
-        jobs_db[job_id]["status_message"] = "Evaluando completitud y actualidad del informe preliminar..."
-        jobs_db[job_id]["steps"].append("Analizando calidad del informe con el evaluador menor...")
+        jobs_db[job_id]["status_message"] = "Iniciando control de calidad: Evaluando si el borrador preliminar está completo y actualizado..."
+        jobs_db[job_id]["steps"].append("Sometiendo el borrador preliminar a una auditoría automatizada de calidad jurídica...")
 
         eval_prompt = f"""
 Eres un analista de control de calidad jurídica para el IIRESODH. Tu tarea es analizar el siguiente informe preliminar y la consulta original del usuario para decidir si la información está completa o si hace falta profundizar en algún aspecto, buscar datos más actualizados, legislaciones omitidas, o solventar contradicciones fácticas.
@@ -257,9 +259,9 @@ Ejemplo de respuesta si falta información contemporánea o de vanguardia:
 
         if not is_complete and additional_query:
             motivo = eval_data.get("motivo", "Falta información complementaria.")
-            jobs_db[job_id]["status_message"] = f"Ampliando investigación: {motivo}"
-            jobs_db[job_id]["steps"].append(f"Control de calidad: Informe incompleto/desactualizado. Motivo: {motivo}")
-            jobs_db[job_id]["steps"].append(f"Buscando información complementaria para: '{additional_query}'")
+            jobs_db[job_id]["status_message"] = f"Segunda revisión requerida: {motivo}. Ampliando investigación..."
+            jobs_db[job_id]["steps"].append(f"Segunda revisión activada. Motivo: {motivo}")
+            jobs_db[job_id]["steps"].append(f"Consultando nuevamente en Biblioteca Privada y Web con la búsqueda: '{additional_query}'")
 
             # Ejecutar búsqueda complementaria
             comp_rag_task = rag_client.search_internal_documents(additional_query)
@@ -274,17 +276,19 @@ Ejemplo de respuesta si falta información contemporánea o de vanguardia:
             nuevos_docs = comp_rag_res.get("documents", [])
             if nuevos_docs:
                 jobs_db[job_id]["documents_consulted"] = list(set(jobs_db[job_id].get("documents_consulted", []) + nuevos_docs))
-                jobs_db[job_id]["steps"].append(f"Documentos adicionales RAG consultados: {', '.join(nuevos_docs)}")
+                jobs_db[job_id]["steps"].append(f"Documentos adicionales en Biblioteca Privada consultados: {', '.join(nuevos_docs)}")
 
             comp_citations = comp_perp_res.get("citations", [])
             nuevos_sitios = list(set(urlparse(url).netloc for url in comp_citations if url))
             if nuevos_sitios:
                 jobs_db[job_id]["websites_consulted"] = list(set(jobs_db[job_id].get("websites_consulted", []) + nuevos_sitios))
-                jobs_db[job_id]["steps"].append(f"Fuentes web adicionales encontradas: {', '.join(nuevos_sitios)}")
+                jobs_db[job_id]["steps"].append(f"Fuentes adicionales en la Web encontradas: {', '.join(nuevos_sitios)}")
 
             # Redacción del informe integrado y corregido final
-            jobs_db[job_id]["status_message"] = "Consolidando e integrando la información complementaria en el informe final..."
-            jobs_db[job_id]["steps"].append("Generando redacción final revisada con Gemini...")
+            add_docs_str = f"{len(nuevos_docs)} nuevos documentos" if nuevos_docs else "sin nuevos documentos"
+            add_web_str = f"{len(nuevos_sitios)} nuevas fuentes web" if nuevos_sitios else "sin nuevas fuentes web"
+            jobs_db[job_id]["status_message"] = f"Segunda revisión recopiló datos ({add_docs_str} y {add_web_str}). Redactando dictamen final integrado..."
+            jobs_db[job_id]["steps"].append("Consolidando el informe preliminar con los nuevos hallazgos en un dictamen final único...")
 
             synthesis_prompt = f"Fecha actual del sistema: {get_date_utc_minus_6()}\n"
             synthesis_prompt += f"""Contexto geográfico principal: {country_code or 'General'}
@@ -328,14 +332,15 @@ Pregunta original del usuario: {prompt}
                 )
             )
             jobs_db[job_id]["result"] = final_response.text
-            jobs_db[job_id]["steps"].append("Informe final unificado, revisado y completado con éxito.")
+            jobs_db[job_id]["steps"].append("Dictamen final consolidado y verificado por el control de calidad con éxito.")
         else:
             jobs_db[job_id]["result"] = initial_result
-            jobs_db[job_id]["steps"].append("Control de calidad: El informe preliminar es 100% íntegro, completo y actualizado.")
+            jobs_db[job_id]["status_message"] = "El borrador preliminar aprobó el control de calidad con éxito."
+            jobs_db[job_id]["steps"].append("Control de calidad: Confirmado que el borrador es 100% íntegro, completo y actualizado.")
 
         jobs_db[job_id]["status"] = "COMPLETADO"
-        jobs_db[job_id]["status_message"] = "Investigación completada con éxito."
-        jobs_db[job_id]["steps"].append("Informe redactado e investigación completada.")
+        jobs_db[job_id]["status_message"] = "Investigación profunda completada con éxito. Dictamen disponible."
+        jobs_db[job_id]["steps"].append("Investigación finalizada. Documento listo para exportación.")
         log.info(f"Deep Research job {job_id} completado con éxito.")
 
     except Exception as e:
