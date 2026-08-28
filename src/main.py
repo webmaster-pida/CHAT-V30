@@ -967,12 +967,12 @@ Pregunta del usuario: {chat_request.prompt}
         
         # Inyectar fuentes en la respuesta para el historial y efecto streaming en UI
         if chat_request.mode == "deep_research" and (documentos_usados or sitios_usados):
-            injection = "&lt;pida_research_details&gt;\n"
+            injection = "<pida_research_details>\n"
             if documentos_usados:
                 injection += f"**Biblioteca Privada:** {', '.join(documentos_usados)}\n\n"
             if sitios_usados:
                 injection += f"**Web:** {', '.join(sitios_usados)}\n\n"
-            injection += "&lt;/pida_research_details&gt;\n\n"
+            injection += "</pida_research_details>\n\n"
             
             yield create_sse_event({'text': injection})
             full_response_text += injection
