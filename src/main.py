@@ -900,6 +900,7 @@ Respuesta (sin comillas, sin explicaciones):"""
                             doc_msg = f"  • {doc}"
                             yield create_sse_event({"event": "status", "message": doc_msg})
                             status_history.append(doc_msg)
+                            await asyncio.sleep(0.4)
                     
             else:
                 msg = "Analizando fuentes web y biblioteca privada..."
@@ -924,6 +925,7 @@ Respuesta (sin comillas, sin explicaciones):"""
                             doc_msg = f"  • {doc}"
                             yield create_sse_event({"event": "status", "message": doc_msg})
                             status_history.append(doc_msg)
+                            await asyncio.sleep(0.4)
                     
                     citaciones = perp_res.get("citations", [])
                     sitios_unicos = list(set(urlparse(url).netloc for url in citaciones if url))
