@@ -893,13 +893,18 @@ Respuesta (sin comillas, sin explicaciones):"""
                 rag_context = rag_res["text"]
                 
                 if chat_request.mode == "deep_research":
-                    for doc in rag_res.get("documents", []):
-                        doc_msg = f"Biblioteca Privada: {doc}"
-                        yield create_sse_event({"event": "status", "message": doc_msg})
-                        status_history.append(doc_msg)
+                    docs = rag_res.get("documents", [])
+                    if docs:
+                        msg_bib = "Documentos consultados en Biblioteca Privada:"
+                        yield create_sse_event({"event": "status", "message": msg_bib})
+                        status_history.append(msg_bib)
+                        for doc in docs:
+                            doc_msg = f"  - {doc}"
+                            yield create_sse_event({"event": "status", "message": doc_msg})
+                            status_history.append(doc_msg)
                     
             else:
-                msg = "Analizando fuentes y biblioteca privada..."
+                msg = "Analizando fuentes web y biblioteca privada..."
                 yield create_sse_event({"event": "status", "message": msg})
                 status_history.append(msg)
                 
@@ -912,19 +917,28 @@ Respuesta (sin comillas, sin explicaciones):"""
                 web_context = perp_res["text"]
                 
                 if chat_request.mode == "deep_research":
-                    for doc in rag_res.get("documents", []):
-                        doc_msg = f"Biblioteca Privada: {doc}"
-                        yield create_sse_event({"event": "status", "message": doc_msg})
-                        status_history.append(doc_msg)
+                    docs = rag_res.get("documents", [])
+                    if docs:
+                        msg_bib = "Documentos consultados en Biblioteca Privada:"
+                        yield create_sse_event({"event": "status", "message": msg_bib})
+                        status_history.append(msg_bib)
+                        for doc in docs:
+                            doc_msg = f"  - {doc}"
+                            yield create_sse_event({"event": "status", "message": doc_msg})
+                            status_history.append(doc_msg)
                     
                     citaciones = perp_res.get("citations", [])
                     sitios_unicos = list(set(urlparse(url).netloc for url in citaciones if url))
-                    for sitio in sitios_unicos:
-                        web_msg = f"Web: {sitio}"
-                        yield create_sse_event({"event": "status", "message": web_msg})
-                        status_history.append(web_msg)
+                    if sitios_unicos:
+                        msg_web = "Sitios web consultados:"
+                        yield create_sse_event({"event": "status", "message": msg_web})
+                        status_history.append(msg_web)
+                        for sitio in sitios_unicos:
+                            web_msg = f"  - {sitio}"
+                            yield create_sse_event({"event": "status", "message": web_msg})
+                            status_history.append(web_msg)
             
-            msg = "Sintetizando y correlacionando fuentes..."
+            msg = "Sintetizando y correlacionando hallazgos..."
             yield create_sse_event({"event": "status", "message": msg})
             status_history.append(msg)
         
