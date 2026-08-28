@@ -73,6 +73,50 @@ Decisión (Responde con PERPLEXITY o LOCAL):"""
         log.error(f"Error en decisión menor con gemini-3.5-flash-lite: {e}")
         return True  # Fallback seguro
 
+async def generate_chat_title(prompt: str) -> str:
+    """
+    Genera mediante gemini-3.5-flash-lite un título coherente y conciso (máximo 55 caracteres)
+    a partir de la consulta completa recibida desde el frontend.
+    """
+    clean_prompt = prompt.strip() if prompt else ""
+    if not clean_prompt or clean_prompt in ["Nuevo Chat", "Sin Título"]:
+        return "Nuevo Chat"
+
+    title_prompt = f"""
+Eres un experto generador de títulos para un sistema de investigación y consulta jurídica.
+Tu tarea es leer la siguiente consulta completa del usuario (que puede ser larga y detallada) y generar un título sumamente coherente, limpio y descriptivo que resuma perfectamente el tema jurídico tratado.
+
+Consulta del usuario: "{clean_prompt}"
+
+Reglas obligatorias:
+1. El título debe ser muy descriptivo pero muy corto.
+2. El título NO puede superar los 55 caracteres (incluyendo espacios).
+3. No uses comillas, puntos finales, guiones iniciales, asteriscos ni explicaciones de ningún tipo.
+4. Responde ÚNICAMENTE con el texto del título.
+
+Título:"""
+    try:
+        response = await genai_client.aio.models.generate_content(
+            model=settings.MINOR_DECISION_MODEL,
+            contents=title_prompt,
+            config=types.GenerateContentConfig(
+                max_output_tokens=25,
+                thinking_config=types.ThinkingConfig(
+                    thinking_level="minimal"
+                )
+            )
+        )
+        title = response.text.strip() if response.text else "Nuevo Chat"
+        title = re.sub(r'^["\'\-–—\s]+|["\'\-–—\s]+$', '', title)
+        if len(title) > 55:
+            title = title[:52].strip() + "..."
+        return title
+    except Exception as e:
+        log.error(f"Error generando título con gemini-3.5-flash-lite: {e}")
+        if len(clean_prompt) > 55:
+            return clean_prompt[:52].strip() + "..."
+        return clean_prompt
+
 async def ejecutar_investigacion_profunda(
     job_id: str, 
     prompt: str, 
@@ -158,7 +202,132 @@ Pregunta del usuario: {prompt}
             config=generation_config
         )
 
-        jobs_db[job_id]["result"] = response.text
+        initial_result = response.text if response.text else ""
+
+        # --- CONTROL DE CALIDAD Y AUTO-AMPLIACIÓN ---
+        jobs_db[job_id]["status_message"] = "Evaluando completitud y actualidad del informe preliminar..."
+        jobs_db[job_id]["steps"].append("Analizando calidad del informe con el evaluador menor...")
+
+        eval_prompt = f"""
+Eres un analista de control de calidad jurídica para el IIRESODH. Tu tarea es analizar el siguiente informe preliminar y la consulta original del usuario para decidir si la información está completa o si hace falta profundizar en algún aspecto, buscar datos más actualizados, legislaciones omitidas, o solventar contradicciones fácticas.
+
+Consulta original: "{prompt}"
+Informe preliminar:
+{initial_result}
+
+Responde estrictamente en formato JSON válido con los siguientes campos:
+- "completo": un booleano (true si el informe responde exhaustiva y completamente con jurisprudencia y actualidad; false si le falta información, requiere datos más actualizados, omite algún punto o carece de profundidad).
+- "motivo": un texto con la razón/vacío identificado si 'completo' es false (vacío si es true).
+- "consulta_adicional": una frase o consulta corta específica de búsqueda (en español) para Perplexity/RAG que ayude a obtener los datos faltantes o actualizados si 'completo' es false (vacío si es true).
+
+Ejemplo de respuesta si falta información:
+{{
+  "completo": false,
+  "motivo": "Falta mencionar las últimas reformas procesales constitucionales de El Salvador de 2024.",
+  "consulta_adicional": "reformas procesales constitucionales el salvador 2024"
+}}
+"""
+        try:
+            eval_response = await genai_client.aio.models.generate_content(
+                model=settings.MINOR_DECISION_MODEL,
+                contents=eval_prompt,
+                config=types.GenerateContentConfig(
+                    max_output_tokens=200,
+                    response_mime_type="application/json",
+                    thinking_config=types.ThinkingConfig(
+                        thinking_level="minimal"
+                    )
+                )
+            )
+            raw_eval = eval_response.text.strip() if eval_response.text else "{}"
+            if raw_eval.startswith("```"):
+                raw_eval = re.sub(r"^```(?:json)?\n|```$", "", raw_eval, flags=re.MULTILINE).strip()
+            eval_data = json.loads(raw_eval)
+        except Exception as eval_e:
+            log.error(f"Error evaluando calidad con gemini-3.5-flash-lite: {eval_e}")
+            eval_data = {"completo": True, "motivo": "", "consulta_adicional": ""}
+
+        is_complete = eval_data.get("completo", True)
+        additional_query = eval_data.get("consulta_adicional", "").strip()
+
+        if not is_complete and additional_query:
+            motivo = eval_data.get("motivo", "Falta información complementaria.")
+            jobs_db[job_id]["status_message"] = f"Ampliando investigación: {motivo}"
+            jobs_db[job_id]["steps"].append(f"Control de calidad: Informe incompleto/desactualizado. Motivo: {motivo}")
+            jobs_db[job_id]["steps"].append(f"Buscando información complementaria para: '{additional_query}'")
+
+            # Ejecutar búsqueda complementaria
+            comp_rag_task = rag_client.search_internal_documents(additional_query)
+            comp_perp_task = perplexity_client.get_perplexity_research(additional_query, model="sonar-pro")
+
+            comp_rag_res, comp_perp_res = await asyncio.gather(comp_rag_task, comp_perp_task)
+
+            comp_rag_context = comp_rag_res["text"]
+            comp_web_context = comp_perp_res["text"]
+
+            # Actualizar metadatos consultados en el job
+            nuevos_docs = comp_rag_res.get("documents", [])
+            if nuevos_docs:
+                jobs_db[job_id]["documents_consulted"] = list(set(jobs_db[job_id].get("documents_consulted", []) + nuevos_docs))
+                jobs_db[job_id]["steps"].append(f"Documentos adicionales RAG consultados: {', '.join(nuevos_docs)}")
+
+            comp_citations = comp_perp_res.get("citations", [])
+            nuevos_sitios = list(set(urlparse(url).netloc for url in comp_citations if url))
+            if nuevos_sitios:
+                jobs_db[job_id]["websites_consulted"] = list(set(jobs_db[job_id].get("websites_consulted", []) + nuevos_sitios))
+                jobs_db[job_id]["steps"].append(f"Fuentes web adicionales encontradas: {', '.join(nuevos_sitios)}")
+
+            # Redacción del informe integrado y corregido final
+            jobs_db[job_id]["status_message"] = "Consolidando e integrando la información complementaria en el informe final..."
+            jobs_db[job_id]["steps"].append("Generando redacción final revisada con Gemini...")
+
+            synthesis_prompt = f"Fecha actual del sistema: {get_date_utc_minus_6()}\n"
+            synthesis_prompt += f"""Contexto geográfico principal: {country_code or 'General'}
+
+--- INFORME PRELIMINAR GENERADO ---
+{initial_result}
+
+--- BRECHA DETECTADA POR CONTROL DE CALIDAD ---
+Se determinó que el informe preliminar requería ampliarse por la siguiente razón:
+"{motivo}"
+
+Hemos realizado búsquedas adicionales específicamente para subsanar este vacío y obtuvimos lo siguiente:
+
+[NUEVO CONTEXTO INTERNO DE JURISPRUDENCIA (RAG)]
+{comp_rag_context}
+
+[NUEVA INVESTIGACIÓN WEB RECIENTE (Perplexity)]
+{comp_web_context}
+
+---
+INSTRUCCIONES DE SÍNTESIS FINAL:
+1. Reestructura y reescribe de forma integrada el "INFORME PRELIMINAR GENERADO" añadiendo de manera natural y sin costuras los nuevos hechos, datos jurídicos, y citas del nuevo contexto.
+2. El resultado debe ser un único dictamen cohesionado, exhaustivo, profesional y de excelente redacción.
+3. NO hagas mención alguna a que existió un "informe preliminar", un "borrador", un "proceso de control de calidad" o que se está "corrigiendo/añadiendo" información. Preséntalo directamente como la respuesta final definitiva del IIRESODH.
+4. Mantén estrictas todas las reglas de formato, la estructura, la sección final de "## Fuentes y Jurisprudencia" (fusionando todas las fuentes utilizadas de forma impecable y ordenada) y las 3 preguntas de seguimiento con las etiquetas `<pida_questions>` y `</pida_questions>`.
+
+Pregunta original del usuario: {prompt}
+"""
+
+            system_instruction_mode = PIDA_SYSTEM_PROMPT + "\n\n⚠️ **MODO DEEP RESEARCH ACTIVO:** DEBES generar obligatoriamente la sección `## Fuentes y Jurisprudencia` consolidando todas las fuentes consultadas de manera ordenada, además de las 3 preguntas de seguimiento al final con `<pida_questions>` y `</pida_questions>`."
+
+            final_response = await genai_client.aio.models.generate_content(
+                model=settings.GEMINI_MODEL,
+                contents=synthesis_prompt,
+                config=types.GenerateContentConfig(
+                    max_output_tokens=65536,
+                    system_instruction=system_instruction_mode,
+                    thinking_config=types.ThinkingConfig(
+                        thinking_level="high"
+                    )
+                )
+            )
+            jobs_db[job_id]["result"] = final_response.text
+            jobs_db[job_id]["steps"].append("Informe final unificado, revisado y completado con éxito.")
+        else:
+            jobs_db[job_id]["result"] = initial_result
+            jobs_db[job_id]["steps"].append("Control de calidad: El informe preliminar es 100% íntegro, completo y actualizado.")
+
         jobs_db[job_id]["status"] = "COMPLETADO"
         jobs_db[job_id]["status_message"] = "Investigación completada con éxito."
         jobs_db[job_id]["steps"].append("Informe redactado e investigación completada.")
@@ -847,8 +1016,14 @@ async def get_conversation_details(convo_id: str, current_user: Dict[str, Any] =
 async def create_new_empty_conversation(request: Request, current_user: Dict[str, Any] = Depends(get_current_user)):
     await verify_active_subscription(current_user)
     body = await request.json()
-    title = body.get("title", "Nuevo Chat")
-    if not title: raise HTTPException(400, "El título no puede estar vacío")
+    raw_title = body.get("title") or body.get("prompt") or "Nuevo Chat"
+    if not raw_title: raise HTTPException(400, "El título o consulta no puede estar vacío")
+    
+    if raw_title.strip() not in ["Nuevo Chat", "Sin Título"]:
+        title = await generate_chat_title(raw_title)
+    else:
+        title = "Nuevo Chat"
+        
     new_convo = await firestore_client.create_new_conversation(current_user['uid'], title)
     return new_convo
 
@@ -864,6 +1039,8 @@ async def update_conversation_title_handler(convo_id: str, request: Request, cur
     body = await request.json()
     new_title = body.get("title")
     if not new_title: raise HTTPException(400, "El título no puede estar vacío")
+    if len(new_title) > 55 or new_title.strip() not in ["Nuevo Chat", "Sin Título"]:
+        new_title = await generate_chat_title(new_title)
     await firestore_client.update_conversation_title(current_user['uid'], convo_id, new_title)
     return
 
