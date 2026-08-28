@@ -820,31 +820,137 @@ async def stream_chat_response_generator(chat_request: ChatRequest, country_code
         
         history_for_gemini = gemini_client.prepare_history_for_genai(history_from_db)
         
-        search_query = chat_request.prompt
         status_history = []
-        msg_inicial = "Ejecutando Investigación Profunda..." if chat_request.mode == "deep_research" else "Iniciando..."
-        yield create_sse_event({"event": "status", "message": msg_inicial})
-        status_history.append(msg_inicial)
-        
-        skip_perplexity = False
-        if chat_request.mode == "chat" and history_from_db:
-            yield create_sse_event({"event": "status", "message": "Evaluando necesidad de búsqueda web..."})
-            status_history.append("Evaluando necesidad de búsqueda web...")
-            history_context = "\n".join([f"{msg.role.upper()}: {msg.content}" for msg in history_from_db[-4:]])
-            perplexity_needed = await decide_if_perplexity_needed(chat_request.prompt, history_context)
-            if not perplexity_needed:
-                skip_perplexity = True
-                yield create_sse_event({"event": "status", "message": "Usando contexto e información local..."})
-                status_history.append("Usando contexto e información local...")
+        memoria_de_trabajo = ""
+        documentos_acumulados = set()
+        sitios_acumulados = set()
+        executed_agentic_plan = False
 
-        if history_from_db and not skip_perplexity:
-            yield create_sse_event({"event": "status", "message": "Contextualizando la búsqueda..."})
-            status_history.append("Contextualizando la búsqueda...")
+        # --- AGENTIC PLAN-AND-SOLVE FOR DEEP RESEARCH ---
+        if chat_request.mode == "deep_research":
+            msg_plan = "Trazando plan de investigación estructurado..."
+            yield create_sse_event({"event": "status", "message": msg_plan})
+            status_history.append(msg_plan)
+
             try:
-                recent_history = history_from_db[-4:] 
-                context_text = "\n".join([f"{msg.role.upper()}: {msg.content}" for msg in recent_history])
+                planner_prompt = f"""
+Eres un Investigador Jefe para un sistema de investigación jurídica (PIDA).
+Debes diseñar un plan de investigación estructurado para responder a la siguiente consulta de manera exhaustiva y profunda:
+"{chat_request.prompt}"
+
+Genera un plan de investigación en formato JSON con un máximo de 3 o 4 tareas independientes y secuenciales para cubrir todos los aspectos del tema (jurisprudencia relevante, actualidad/noticias, doctrina de derechos humanos y legislación aplicable).
+Cada tarea debe tener un 'titulo_paso' corto y descriptivo (ej. 'Analizar jurisprudencia de la CIDH sobre el tema') y una 'query_de_busqueda' específica y optimizada en español para motores de búsqueda (ej. 'cidh jurisprudencia amnistia impunidad casos').
+
+Responde ESTRICTAMENTE con un objeto JSON válido con la siguiente estructura:
+{{
+  "plan": [
+    {{
+      "titulo_paso": "...",
+      "query_de_busqueda": "..."
+    }}
+  ]
+}}
+No incluyas explicaciones, ni bloques de código markdown, solo el JSON puro.
+"""
+                planner_response = await genai_client.aio.models.generate_content(
+                    model=settings.MINOR_DECISION_MODEL,
+                    contents=planner_prompt,
+                    config=types.GenerateContentConfig(
+                        max_output_tokens=600,
+                        response_mime_type="application/json",
+                        thinking_config=types.ThinkingConfig(
+                            thinking_level="minimal"
+                        )
+                    )
+                )
                 
-                reformulation_prompt = f"""
+                raw_plan = planner_response.text.strip() if planner_response.text else "{}"
+                if raw_plan.startswith("```"):
+                    raw_plan = re.sub(r"^```(?:json)?\n|```$", "", raw_plan, flags=re.MULTILINE).strip()
+                
+                plan_data = json.loads(raw_plan)
+                tasks = plan_data.get("plan", [])
+                
+                if tasks and isinstance(tasks, list):
+                    # Asegurar un máximo de 3 o 4 pasos
+                    tasks = tasks[:4]
+                    
+                    for step_idx, task in enumerate(tasks, 1):
+                        titulo_paso = task.get("titulo_paso", f"Paso {step_idx}")
+                        query_de_busqueda = task.get("query_de_busqueda", chat_request.prompt)
+                        
+                        msg_step = f"Ejecutando: {titulo_paso}"
+                        yield create_sse_event({"event": "status", "message": msg_step})
+                        status_history.append(msg_step)
+                        
+                        # Búsqueda simultánea asíncrona
+                        rag_task = rag_client.search_internal_documents(query_de_busqueda)
+                        perp_task = perplexity_client.get_perplexity_research(query_de_busqueda, model="sonar-pro")
+                        rag_res, perp_res = await asyncio.gather(rag_task, perp_task)
+                        
+                        rag_text = rag_res.get("text", "")
+                        web_text = perp_res.get("text", "")
+                        
+                        # Guardar información estructurada por paso en la memoria de trabajo
+                        memoria_de_trabajo += f"\n\n### INVESTIGACIÓN PASO {step_idx}: {titulo_paso}\n"
+                        memoria_de_trabajo += f"[CONTEXTO INTERNO RAG DE ESTE PASO]:\n{rag_text}\n"
+                        memoria_de_trabajo += f"[INVESTIGACIÓN WEB DE ESTE PASO]:\n{web_text}\n"
+                        
+                        # Procesar y enviar de forma escalonada documentos y sitios encontrados
+                        docs = rag_res.get("documents", [])
+                        for doc in docs:
+                            if doc not in documentos_acumulados:
+                                documentos_acumulados.add(doc)
+                                doc_msg = f"  • {doc}"
+                                yield create_sse_event({"event": "status", "message": doc_msg})
+                                status_history.append(doc_msg)
+                                await asyncio.sleep(0.3)
+                                
+                        citations = perp_res.get("citations", [])
+                        sitios = list(set(urlparse(url).netloc for url in citations if url))
+                        for sitio in sitios:
+                            if sitio not in sitios_acumulados:
+                                sitios_acumulados.add(sitio)
+                                web_msg = f"  • {sitio}"
+                                yield create_sse_event({"event": "status", "message": web_msg})
+                                status_history.append(web_msg)
+                                await asyncio.sleep(0.3)
+                                
+                    executed_agentic_plan = True
+                    
+                    msg_fin = "Plan completado. Sintetizando y redactando dictamen final..."
+                    yield create_sse_event({"event": "status", "message": msg_fin})
+                    status_history.append(msg_fin)
+                    
+            except Exception as planner_err:
+                log.error(f"Error en Planner agéntico, cayendo en fallback: {planner_err}", exc_info=True)
+
+        # --- MODO CHAT O FALLBACK SEGURO SI FALLA EL PLANIFICADOR ---
+        if not executed_agentic_plan:
+            search_query = chat_request.prompt
+            msg_inicial = "Ejecutando Investigación Profunda..." if chat_request.mode == "deep_research" else "Iniciando..."
+            yield create_sse_event({"event": "status", "message": msg_inicial})
+            status_history.append(msg_inicial)
+            
+            skip_perplexity = False
+            if chat_request.mode == "chat" and history_from_db:
+                yield create_sse_event({"event": "status", "message": "Evaluando necesidad de búsqueda web..."})
+                status_history.append("Evaluando necesidad de búsqueda web...")
+                history_context = "\n".join([f"{msg.role.upper()}: {msg.content}" for msg in history_from_db[-4:]])
+                perplexity_needed = await decide_if_perplexity_needed(chat_request.prompt, history_context)
+                if not perplexity_needed:
+                    skip_perplexity = True
+                    yield create_sse_event({"event": "status", "message": "Usando contexto e información local..."})
+                    status_history.append("Usando contexto e información local...")
+
+            if history_from_db and not skip_perplexity:
+                yield create_sse_event({"event": "status", "message": "Contextualizando la búsqueda..."})
+                status_history.append("Contextualizando la búsqueda...")
+                try:
+                    recent_history = history_from_db[-4:] 
+                    context_text = "\n".join([f"{msg.role.upper()}: {msg.content}" for msg in recent_history])
+                    
+                    reformulation_prompt = f"""
 Instrucción: Actúa como un clasificador binario y reformulador estricto. Tu ÚNICA tarea es decidir si la pregunta necesita buscarse en internet.
 
 Historial reciente:
@@ -856,93 +962,95 @@ Regla 1: Si la pregunta busca aclarar algo del historial ("¿De qué país habla
 Regla 2: Si la pregunta pide leyes o datos nuevos, reformúlala incluyendo el país principal ({country_code or 'el del historial'}).
 
 Respuesta (sin comillas, sin explicaciones):"""
-                
-                response = await genai_client.aio.models.generate_content(
-                    model=settings.MINOR_DECISION_MODEL,
-                    contents=reformulation_prompt,
-                    config=types.GenerateContentConfig(
-                        max_output_tokens=20,
-                        thinking_config=types.ThinkingConfig(
-                            thinking_level="minimal"
-                        ),
-                        automatic_function_calling=types.AutomaticFunctionCallingConfig(
-                            disable=True
+                    
+                    response = await genai_client.aio.models.generate_content(
+                        model=settings.MINOR_DECISION_MODEL,
+                        contents=reformulation_prompt,
+                        config=types.GenerateContentConfig(
+                            max_output_tokens=20,
+                            thinking_config=types.ThinkingConfig(
+                                thinking_level="minimal"
+                            ),
+                            automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                                disable=True
+                            )
                         )
                     )
-                )
+                    
+                    if response.text:
+                        search_query = response.text.strip().replace('"', '').replace("'", "").replace('*', '')
+                        log.info(f"Query original: '{chat_request.prompt}' | Query reformulada: '{search_query}'")
+                except Exception as e:
+                    log.warning(f"Error reformulando la query, usando la original. Detalle: {e}")
+                    search_query = chat_request.prompt
+
+            rag_context = ""
+            web_context = ""
+
+            if "SKIP_SEARCH" not in search_query.upper():
+                if skip_perplexity:
+                    msg = "Analizando biblioteca privada..."
+                    yield create_sse_event({"event": "status", "message": msg})
+                    status_history.append(msg)
+                    
+                    rag_res = await rag_client.search_internal_documents(search_query)
+                    rag_context = rag_res["text"]
+                    
+                    if chat_request.mode == "deep_research":
+                        docs = rag_res.get("documents", [])
+                        if docs:
+                            msg_bib = "Documentos consultados en Biblioteca Privada:"
+                            yield create_sse_event({"event": "status", "message": msg_bib})
+                            status_history.append(msg_bib)
+                            for doc in docs:
+                                doc_msg = f"  • {doc}"
+                                yield create_sse_event({"event": "status", "message": doc_msg})
+                                status_history.append(doc_msg)
+                                await asyncio.sleep(0.4)
+                        
+                else:
+                    msg = "Analizando fuentes web y biblioteca privada..."
+                    yield create_sse_event({"event": "status", "message": msg})
+                    status_history.append(msg)
+                    
+                    rag_task = rag_client.search_internal_documents(search_query)
+                    perp_model = "sonar-pro" if chat_request.mode == "deep_research" else "sonar"
+                    perp_task = perplexity_client.get_perplexity_research(search_query, model=perp_model)
+                    rag_res, perp_res = await asyncio.gather(rag_task, perp_task)
+                    
+                    rag_context = rag_res["text"]
+                    web_context = perp_res["text"]
+                    
+                    if chat_request.mode == "deep_research":
+                        docs = rag_res.get("documents", [])
+                        if docs:
+                            msg_bib = "Documentos consultados en Biblioteca Privada:"
+                            yield create_sse_event({"event": "status", "message": msg_bib})
+                            status_history.append(msg_bib)
+                            for doc in docs:
+                                doc_msg = f"  • {doc}"
+                                yield create_sse_event({"event": "status", "message": doc_msg})
+                                status_history.append(doc_msg)
+                                await asyncio.sleep(0.4)
+                        
+                        citaciones = perp_res.get("citations", [])
+                        sitios_unicos = list(set(urlparse(url).netloc for url in citaciones if url))
+                        if sitios_unicos:
+                            msg_web = "Sitios web consultados:"
+                            yield create_sse_event({"event": "status", "message": msg_web})
+                            status_history.append(msg_web)
+                            for sitio in sitios_unicos:
+                                web_msg = f"  • {sitio}"
+                                yield create_sse_event({"event": "status", "message": web_msg})
+                                status_history.append(web_msg)
                 
-                if response.text:
-                    search_query = response.text.strip().replace('"', '').replace("'", "").replace('*', '')
-                    log.info(f"Query original: '{chat_request.prompt}' | Query reformulada: '{search_query}'")
-            except Exception as e:
-                log.warning(f"Error reformulando la query, usando la original. Detalle: {e}")
-                search_query = chat_request.prompt
-
-        rag_context = ""
-        web_context = ""
-
-        if "SKIP_SEARCH" not in search_query.upper():
-            if skip_perplexity:
-                msg = "Analizando biblioteca privada..."
+                msg = "Sintetizando y correlacionando hallazgos..."
                 yield create_sse_event({"event": "status", "message": msg})
                 status_history.append(msg)
-                
-                rag_res = await rag_client.search_internal_documents(search_query)
-                rag_context = rag_res["text"]
-                
-                if chat_request.mode == "deep_research":
-                    docs = rag_res.get("documents", [])
-                    if docs:
-                        msg_bib = "Documentos consultados en Biblioteca Privada:"
-                        yield create_sse_event({"event": "status", "message": msg_bib})
-                        status_history.append(msg_bib)
-                        for doc in docs:
-                            doc_msg = f"  • {doc}"
-                            yield create_sse_event({"event": "status", "message": doc_msg})
-                            status_history.append(doc_msg)
-                            await asyncio.sleep(0.4)
-                    
-            else:
-                msg = "Analizando fuentes web y biblioteca privada..."
-                yield create_sse_event({"event": "status", "message": msg})
-                status_history.append(msg)
-                
-                rag_task = rag_client.search_internal_documents(search_query)
-                perp_model = "sonar-pro" if chat_request.mode == "deep_research" else "sonar"
-                perp_task = perplexity_client.get_perplexity_research(search_query, model=perp_model)
-                rag_res, perp_res = await asyncio.gather(rag_task, perp_task)
-                
-                rag_context = rag_res["text"]
-                web_context = perp_res["text"]
-                
-                if chat_request.mode == "deep_research":
-                    docs = rag_res.get("documents", [])
-                    if docs:
-                        msg_bib = "Documentos consultados en Biblioteca Privada:"
-                        yield create_sse_event({"event": "status", "message": msg_bib})
-                        status_history.append(msg_bib)
-                        for doc in docs:
-                            doc_msg = f"  • {doc}"
-                            yield create_sse_event({"event": "status", "message": doc_msg})
-                            status_history.append(doc_msg)
-                            await asyncio.sleep(0.4)
-                    
-                    citaciones = perp_res.get("citations", [])
-                    sitios_unicos = list(set(urlparse(url).netloc for url in citaciones if url))
-                    if sitios_unicos:
-                        msg_web = "Sitios web consultados:"
-                        yield create_sse_event({"event": "status", "message": msg_web})
-                        status_history.append(msg_web)
-                        for sitio in sitios_unicos:
-                            web_msg = f"  • {sitio}"
-                            yield create_sse_event({"event": "status", "message": web_msg})
-                            status_history.append(web_msg)
             
-            msg = "Sintetizando y correlacionando hallazgos..."
-            yield create_sse_event({"event": "status", "message": msg})
-            status_history.append(msg)
-        
-        combined_context = f"{rag_context}\n{web_context}"
+            memoria_de_trabajo = f"{rag_context}\n{web_context}"
+
+        combined_context = memoria_de_trabajo
         trusted_urls_set = set(re.findall(r'https?://[^\s\)\],>]+', combined_context))
         
         yield create_sse_event({"event": "status", "message": "Formulando respuesta jurídica final..."})
@@ -952,7 +1060,32 @@ Respuesta (sin comillas, sin explicaciones):"""
         fecha_actual = get_date_utc_minus_6()
         
         # 2. Inyecta la fecha en la primera línea del final_prompt
-        final_prompt = f"""Fecha actual del sistema: {fecha_actual}
+        if executed_agentic_plan:
+            final_prompt = f"""Fecha actual del sistema: {fecha_actual}
+Contexto geográfico principal: {country_code or 'General'}
+
+--- JERARQUÍA Y PESO DE LAS FUENTES (CRÍTICO PARA RESPUESTAS ACTUALIZADAS) ---
+1. [INVESTIGACIÓN WEB RECIENTE (Perplexity)] -> PESO MÁXIMO (100%): Es tu fuente de verdad absoluta para hechos, noticias, cambios legislativos, decretos, eventos actuales y datos recientes. Si esta información contradice tu conocimiento de entrenamiento o al RAG, prevalece Perplexity. Tienes prohibido usar datos antiguos o desactualizados si este bloque contiene información fresca.
+2. [CONTEXTO INTERNO DE JURISPRUDENCIA (RAG)] -> PESO ALTO (80%): Es la fuente prioritaria para jurisprudencia, sentencias y doctrina institucional específica provista por el IIRESODH.
+3. CONOCIMIENTO PREENTRENADO DEL MODELO -> PESO BAJO (20%): Solo debe usarse para el desarrollo de la teoría general, doctrina jurídica abstracta, principios generales y redacción estilística formal. No uses tu propio conocimiento para eventos, juicios, noticias o leyes posteriores a tu fecha de corte.
+
+Toma en cuenta las fuentes proporcionadas. 
+IMPORTANTE: No uses '[INVESTIGACIÓN WEB RECIENTE]' como nombre de fuente. Extrae el nombre real del sitio web (ej: ONU, Amnistía, Wikipedia) desde la URL proporcionada.
+
+[MEMORIA DE TRABAJO Y RESULTADOS DE INVESTIGACIÓN COMPILADA]
+{memoria_de_trabajo}
+
+---
+INSTRUCCIÓN CRÍTICA DE ENLACES: 
+1. ¡NO USES NÚMEROS ENTRE CORCHETES COMO [1] O [2] PARA CITAR! El sistema los borrará automáticamente y perderemos la referencia.
+2. Tienes que leer las URLs que te dio la investigación web en cada paso de la memoria de trabajo y crear hipervínculos Markdown reales (ej: Nombre de la Institución).
+3. ES OBLIGATORIO que los enlaces válidos aparezcan incrustados dentro de los párrafos. Si todas las fuentes web fueron descartadas por ser de otro país irrelevante, básate solo en tu conocimiento y el RAG, y no pongas enlaces web.
+
+Pregunta del usuario: {chat_request.prompt}
+⚠️ REGLA FINAL: Verifica la existencia real de lo que pide el usuario antes de responder. No asumas su premisa como verdadera.
+"""
+        else:
+            final_prompt = f"""Fecha actual del sistema: {fecha_actual}
 Contexto geográfico principal: {country_code or 'General'}
 
 --- JERARQUÍA Y PESO DE LAS FUENTES (CRÍTICO PARA RESPUESTAS ACTUALIZADAS) ---
@@ -974,7 +1107,7 @@ IMPORTANTE: No uses '[INVESTIGACIÓN WEB RECIENTE]' como nombre de fuente. Extra
 ---
 INSTRUCCIÓN CRÍTICA DE ENLACES: 
 1. ¡NO USES NÚMEROS ENTRE CORCHETES COMO [1] O [2] PARA CITAR! El sistema los borrará automáticamente y perderemos la referencia.
-2. Tienes que leer la sección "FUENTES DE INTERNET" que te dio Perplexity y crear hipervínculos Markdown reales (ej: [Nombre de la Institución](URL_COMPLETA)).
+2. Tienes que leer la sección "FUENTES DE INTERNET" que te dio Perplexity y crear hipervínculos Markdown reales (ej: Nombre de la Institución).
 3. ES OBLIGATORIO que los enlaces válidos aparezcan incrustados dentro de los párrafos. Si todas las fuentes web fueron descartadas por ser de otro país irrelevante, básate solo en tu conocimiento y el RAG, y no pongas enlaces web.
 
 Pregunta del usuario: {chat_request.prompt}
