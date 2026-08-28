@@ -16,7 +16,12 @@ async def get_conversations(user_id: str) -> List[Dict[str, Any]]:
         convos = []
         async for doc in conversations_ref.stream():
             data = doc.to_dict()
-            convos.append({"id": doc.id, "title": data.get("title", "Sin Título"), "userId": user_id})
+            convos.append({
+                "id": doc.id,
+                "title": data.get("title", "Sin Título"),
+                "userId": user_id,
+                "conversation_type": data.get("conversation_type", "chat")
+            })
         return convos
     except Exception as e:
         log.error(f"Error al obtener conversaciones para el usuario {user_id}: {e}")
@@ -52,8 +57,8 @@ async def add_message_to_conversation(user_id: str, convo_id: str, message: Chat
     except Exception as e:
         log.error(f"Error al añadir mensaje a la convo {convo_id} del usuario {user_id}: {e}")
 
-async def create_new_conversation(user_id: str, title: str) -> Dict[str, Any]:
-    """Crea una nueva conversación y devuelve su ID y título."""
+async def create_new_conversation(user_id: str, title: str, conversation_type: str = "chat") -> Dict[str, Any]:
+    """Crea una nueva conversación y devuelve su ID, título y tipo."""
     try:
         # Asegurar la existencia del documento del usuario para evitar "documentos fantasma"
         user_ref = db.collection('users').document(user_id)
@@ -64,6 +69,7 @@ async def create_new_conversation(user_id: str, title: str) -> Dict[str, Any]:
         doc_ref = user_ref.collection('conversations').document()
         await doc_ref.set({
             "title": title,
+            "conversation_type": conversation_type,
             "created_at": firestore.SERVER_TIMESTAMP
         })
         
@@ -78,7 +84,7 @@ async def create_new_conversation(user_id: str, title: str) -> Dict[str, Any]:
             log.error(f"Error guardando estadística mensual de conversaciones: {stats_e}")
         # ----------------------------------------------------
         
-        return {"id": doc_ref.id, "title": title}
+        return {"id": doc_ref.id, "title": title, "conversation_type": conversation_type}
     except Exception as e:
         log.error(f"Error al crear nueva conversación para el usuario {user_id}: {e}")
         return {}

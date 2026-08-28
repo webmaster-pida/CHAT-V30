@@ -1224,6 +1224,9 @@ async def create_new_empty_conversation(request: Request, current_user: Dict[str
     await verify_active_subscription(current_user)
     body = await request.json()
     raw_title = body.get("title") or body.get("prompt") or "Nuevo Chat"
+    conversation_type = body.get("conversation_type") or body.get("mode") or "chat"
+    if conversation_type not in ["chat", "deep_research"]:
+        conversation_type = "chat"
     if not raw_title: raise HTTPException(400, "El título o consulta no puede estar vacío")
     
     if raw_title.strip() not in ["Nuevo Chat", "Sin Título"]:
@@ -1231,7 +1234,7 @@ async def create_new_empty_conversation(request: Request, current_user: Dict[str
     else:
         title = "Nuevo Chat"
         
-    new_convo = await firestore_client.create_new_conversation(current_user['uid'], title)
+    new_convo = await firestore_client.create_new_conversation(current_user['uid'], title, conversation_type)
     return new_convo
 
 @app.delete("/conversations/{convo_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["Chat History"])
