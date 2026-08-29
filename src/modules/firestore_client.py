@@ -51,9 +51,16 @@ async def add_message_to_conversation(user_id: str, convo_id: str, message: Chat
             "updated_at": firestore.SERVER_TIMESTAMP
         }, merge=True)
 
+        # Sincroniza el tipo de conversación padre con el modo del mensaje actual
+        convo_ref = user_ref.collection('conversations').document(convo_id)
+        if message.mode:
+            await convo_ref.set({
+                "conversation_type": message.mode
+            }, merge=True)
+
         message_data = message.model_dump()
         message_data["timestamp"] = firestore.SERVER_TIMESTAMP
-        await user_ref.collection('conversations').document(convo_id).collection('messages').add(message_data)
+        await convo_ref.collection('messages').add(message_data)
     except Exception as e:
         log.error(f"Error al añadir mensaje a la convo {convo_id} del usuario {user_id}: {e}")
 
