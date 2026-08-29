@@ -93,6 +93,7 @@ async def generate_streaming_response(
                     text_buffer += chunk.text
                     
                     # --- CLEANING LOGIC (Se mantiene tu lógica exacta anti-alucinaciones y formato) ---
+                    text_buffer = re.sub(r'[\u2500-\u259F]', '', text_buffer)
                     text_buffer = re.sub(r'\s?[\[\(]\s*\d+(?:\s*,\s*\d+)*\s*[\]\)]', '', text_buffer)
                     text_buffer = text_buffer.replace(">**", "**")
                     text_buffer = text_buffer.replace(" <", " \"")
@@ -116,6 +117,7 @@ async def generate_streaming_response(
                         text_buffer = ""
 
             if text_buffer:
+                text_buffer = re.sub(r'[\u2500-\u259F]', '', text_buffer)
                 text_buffer = re.sub(r'(?m)^\s*[\-\*•>]\s*$', '', text_buffer)
                 yield text_buffer
             

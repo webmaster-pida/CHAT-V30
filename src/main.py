@@ -206,6 +206,7 @@ Pregunta del usuario: {prompt}
         )
 
         initial_result = response.text if response.text else ""
+        initial_result = re.sub(r'[\u2500-\u259F]', '', initial_result)
 
         # --- CONTROL DE CALIDAD Y AUTO-AMPLIACIÓN ---
         jobs_db[job_id]["status_message"] = "Borrador preliminar redactado. Sometiéndolo a auditoría de calidad de IA para verificar exhaustividad y vanguardia doctrinal..."
@@ -332,7 +333,9 @@ Pregunta original del usuario: {prompt}
                     )
                 )
             )
-            jobs_db[job_id]["result"] = final_response.text
+            final_result = final_response.text if final_response.text else ""
+            final_result = re.sub(r'[\u2500-\u259F]', '', final_result)
+            jobs_db[job_id]["result"] = final_result
             jobs_db[job_id]["steps"].append("Dictamen final consolidado y verificado por el control de calidad con éxito.")
         else:
             jobs_db[job_id]["result"] = initial_result
