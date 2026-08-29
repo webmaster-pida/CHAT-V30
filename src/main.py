@@ -1254,6 +1254,42 @@ async def update_conversation_title_handler(convo_id: str, request: Request, cur
     await firestore_client.update_conversation_title(current_user['uid'], convo_id, new_title)
     return
 
+async def keep_alive_wrapper(async_gen, interval: float = 3.0):
+    """
+    Wraps an async generator. If it doesn't yield anything for `interval` seconds,
+    yields a keep-alive SSE comment to keep the connection open and prevent timeouts.
+    """
+    queue = asyncio.Queue()
+    done = asyncio.Event()
+
+    async def producer():
+        try:
+            async for item in async_gen:
+                await queue.put(item)
+        except Exception as e:
+            await queue.put(e)
+        finally:
+            done.set()
+
+    producer_task = asyncio.create_task(producer())
+
+    try:
+        while not (done.is_set() and queue.empty()):
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=interval)
+                if isinstance(item, Exception):
+                    raise item
+                yield item
+            except asyncio.TimeoutError:
+                yield ": keep-alive\n\n"
+    finally:
+        if not producer_task.done():
+            producer_task.cancel()
+            try:
+                await producer_task
+            except asyncio.CancelledError:
+                pass
+
 @app.post("/chat-stream/{convo_id}", tags=["Chat"])
 async def chat_stream_handler(
     convo_id: str, 
@@ -1289,11 +1325,14 @@ async def chat_stream_handler(
         tokens_sent = False
         
         try:
-            async for chunk in stream_chat_response_generator(
-                chat_request, 
-                country_code, 
-                current_user, 
-                convo_id
+            async for chunk in keep_alive_wrapper(
+                stream_chat_response_generator(
+                    chat_request, 
+                    country_code, 
+                    current_user, 
+                    convo_id
+                ),
+                interval=3.0
             ):
                 if '"error":' in chunk:
                     has_error = True
