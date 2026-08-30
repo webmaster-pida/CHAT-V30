@@ -1176,7 +1176,7 @@ Pregunta del usuario: {chat_request.prompt}
         
         thinking_level = "high" if chat_request.mode == "deep_research" else "medium"
         if chat_request.mode == "chat" and fast_direct_mode:
-            thinking_level = "minimal"
+            thinking_level = "low"
         
         # Inyectar el log de estados en la respuesta para el historial y efecto streaming en UI
         if chat_request.mode == "deep_research" and status_history:
