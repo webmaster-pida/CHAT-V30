@@ -117,6 +117,53 @@ Título:"""
             return clean_prompt[:52].strip() + "..."
         return clean_prompt
 
+async def evaluate_chat_routing(prompt: str, history_context: str) -> Dict[str, Any]:
+    """
+    Evalúa mediante gemini-3.5-flash-lite cómo debe procesarse la consulta en el modo chat:
+    1. FAST_DIRECT: Si es un saludo, una pregunta muy simple, aclaratoria, o conceptual básica sin búsquedas externas.
+    2. ROUTED_MAJOR: Consulta jurídica normal que requiere activar RAG y Perplexity.
+    3. DEEP_SUGGESTION: Consulta altamente compleja que amerita sugerir el modo Deep Research.
+    """
+    decision_prompt = f"""
+Eres un ruteador y evaluador de consultas jurídicas de primer nivel para PIDA.
+Tu objetivo es analizar la nueva pregunta del usuario (y el historial reciente si existe) para decidir la ruta de procesamiento óptima para el modo CHAT.
+
+Historial de la conversación reciente:
+{history_context}
+
+Nueva pregunta del usuario: {prompt}
+
+Debes elegir exactamente una de las siguientes tres decisiones:
+1. "FAST_DIRECT": El usuario hace un saludo, despedida, agradecimiento, pregunta aclaratoria sobre el mensaje anterior, o una duda conceptual muy simple de derecho general que NO requiere buscar información fresca en internet ni en la base de datos de jurisprudencia (RAG).
+2. "ROUTED_MAJOR": La consulta es una pregunta jurídica sustancial sobre leyes, casos, jurisprudencia o actualidad que requiere precisión técnica y amerita activar búsquedas (RAG y Perplexity) y utilizar el modelo mayor.
+3. "DEEP_SUGGESTION": La consulta es de alta complejidad o profundidad jurídica (por ejemplo, solicita la redacción de un dictamen completo, comparación detallada de tratados, análisis profundo de casos complejos, o resolver una consulta legal con múltiples variables complejas). En este caso, amerita sugerir proactivamente al usuario que use el modo "Deep Research" para obtener un análisis auditado paso a paso, pero procediendo a darle una respuesta preliminar en este turno con búsquedas activadas.
+
+Responde ESTRICTAMENTE con un objeto JSON válido que tenga el siguiente formato (sin bloques de código markdown, sin explicaciones adicionales, solo el JSON crudo):
+{{
+  "decision": "FAST_DIRECT" | "ROUTED_MAJOR" | "DEEP_SUGGESTION",
+  "suggestion_text": "Una sugerencia muy amigable, cercana y profesional (máximo 2 líneas) invitando al usuario a usar el modo 'Deep Research' (Búsqueda Profunda) si quiere un dictamen completo y auditado paso a paso para esta consulta de alta complejidad (rellenar únicamente si la decisión es DEEP_SUGGESTION; de lo contrario, dejar vacío)."
+}}
+"""
+    try:
+        response = await genai_client.aio.models.generate_content(
+            model=settings.MINOR_DECISION_MODEL,
+            contents=decision_prompt,
+            config=types.GenerateContentConfig(
+                max_output_tokens=250,
+                response_mime_type="application/json",
+                thinking_config=types.ThinkingConfig(
+                    thinking_level="minimal"
+                )
+            )
+        )
+        raw_text = response.text.strip() if response.text else "{}"
+        if raw_text.startswith("```"):
+            raw_text = re.sub(r"^```(?:json)?\n|```$", "", raw_text, flags=re.MULTILINE).strip()
+        return json.loads(raw_text)
+    except Exception as e:
+        log.error(f"Error en evaluación de ruteo de chat: {e}")
+        return {"decision": "ROUTED_MAJOR", "suggestion_text": ""}
+
 async def ejecutar_investigacion_profunda(
     job_id: str, 
     prompt: str, 
@@ -936,22 +983,38 @@ No incluyas explicaciones, ni bloques de código markdown, solo el JSON puro.
         # --- MODO CHAT O FALLBACK SEGURO SI FALLA EL PLANIFICADOR ---
         if not executed_agentic_plan:
             search_query = chat_request.prompt
-            msg_inicial = "Ejecutando Investigación Profunda..." if chat_request.mode == "deep_research" else "Iniciando..."
-            yield create_sse_event({"event": "status", "message": msg_inicial})
-            status_history.append(msg_inicial)
             
-            skip_perplexity = False
-            if chat_request.mode == "chat" and history_from_db:
-                yield create_sse_event({"event": "status", "message": "Evaluando necesidad de búsqueda web..."})
-                status_history.append("Evaluando necesidad de búsqueda web...")
-                history_context = "\n".join([f"{msg.role.upper()}: {msg.content}" for msg in history_from_db[-4:]])
-                perplexity_needed = await decide_if_perplexity_needed(chat_request.prompt, history_context)
-                if not perplexity_needed:
-                    skip_perplexity = True
-                    yield create_sse_event({"event": "status", "message": "Usando contexto e información local..."})
-                    status_history.append("Usando contexto e información local...")
+            # --- EVALUACIÓN DE RUTEO EXCLUSIVA PARA MODO CHAT ---
+            suggestion_prefix = ""
+            fast_direct_mode = False
+            
+            if chat_request.mode == "chat":
+                yield create_sse_event({"event": "status", "message": "Evaluando complejidad de la consulta..."})
+                status_history.append("Evaluando complejidad de la consulta...")
+                
+                history_context = "\n".join([f"{msg.role.upper()}: {msg.content}" for msg in history_from_db[-4:]]) if history_from_db else "Sin historial"
+                routing_result = await evaluate_chat_routing(chat_request.prompt, history_context)
+                decision = routing_result.get("decision", "ROUTED_MAJOR")
+                
+                if decision == "FAST_DIRECT":
+                    fast_direct_mode = True
+                    yield create_sse_event({"event": "status", "message": "Procesando respuesta rápida directa..."})
+                    status_history.append("Procesando respuesta rápida directa...")
+                elif decision == "DEEP_SUGGESTION":
+                    suggestion_prefix = routing_result.get("suggestion_text", "")
+                    if suggestion_prefix:
+                        suggestion_prefix = f"💡 *{suggestion_prefix}*\n\n"
+                    yield create_sse_event({"event": "status", "message": "Analizando consulta profunda con búsquedas..."})
+                    status_history.append("Analizando consulta profunda con búsquedas...")
+                else:
+                    yield create_sse_event({"event": "status", "message": "Iniciando búsquedas e investigación..."})
+                    status_history.append("Iniciando búsquedas e investigación...")
+            else:
+                msg_inicial = "Ejecutando Investigación Profunda..."
+                yield create_sse_event({"event": "status", "message": msg_inicial})
+                status_history.append(msg_inicial)
 
-            if history_from_db and not skip_perplexity:
+            if history_from_db and not fast_direct_mode:
                 yield create_sse_event({"event": "status", "message": "Contextualizando la búsqueda..."})
                 status_history.append("Contextualizando la búsqueda...")
                 try:
@@ -995,62 +1058,41 @@ Respuesta (sin comillas, sin explicaciones):"""
             rag_context = ""
             web_context = ""
 
-            if "SKIP_SEARCH" not in search_query.upper():
-                if skip_perplexity:
-                    msg = "Analizando biblioteca privada..."
-                    yield create_sse_event({"event": "status", "message": msg})
-                    status_history.append(msg)
+            if "SKIP_SEARCH" not in search_query.upper() and not fast_direct_mode:
+                msg = "Analizando fuentes web y biblioteca privada..."
+                yield create_sse_event({"event": "status", "message": msg})
+                status_history.append(msg)
+                
+                rag_task = rag_client.search_internal_documents(search_query)
+                perp_model = "sonar-pro" if chat_request.mode == "deep_research" else "sonar"
+                perp_task = perplexity_client.get_perplexity_research(search_query, model=perp_model)
+                rag_res, perp_res = await asyncio.gather(rag_task, perp_task)
+                
+                rag_context = rag_res["text"]
+                web_context = perp_res["text"]
+                
+                if chat_request.mode == "deep_research":
+                    docs = rag_res.get("documents", [])
+                    if docs:
+                        msg_bib = "Documentos consultados en Biblioteca Privada:"
+                        yield create_sse_event({"event": "status", "message": msg_bib})
+                        status_history.append(msg_bib)
+                        for doc in docs:
+                            doc_msg = f"  • {doc}"
+                            yield create_sse_event({"event": "status", "message": doc_msg})
+                            status_history.append(doc_msg)
+                            await asyncio.sleep(0.4)
                     
-                    rag_res = await rag_client.search_internal_documents(search_query)
-                    rag_context = rag_res["text"]
-                    
-                    if chat_request.mode == "deep_research":
-                        docs = rag_res.get("documents", [])
-                        if docs:
-                            msg_bib = "Documentos consultados en Biblioteca Privada:"
-                            yield create_sse_event({"event": "status", "message": msg_bib})
-                            status_history.append(msg_bib)
-                            for doc in docs:
-                                doc_msg = f"  • {doc}"
-                                yield create_sse_event({"event": "status", "message": doc_msg})
-                                status_history.append(doc_msg)
-                                await asyncio.sleep(0.4)
-                        
-                else:
-                    msg = "Analizando fuentes web y biblioteca privada..."
-                    yield create_sse_event({"event": "status", "message": msg})
-                    status_history.append(msg)
-                    
-                    rag_task = rag_client.search_internal_documents(search_query)
-                    perp_model = "sonar-pro" if chat_request.mode == "deep_research" else "sonar"
-                    perp_task = perplexity_client.get_perplexity_research(search_query, model=perp_model)
-                    rag_res, perp_res = await asyncio.gather(rag_task, perp_task)
-                    
-                    rag_context = rag_res["text"]
-                    web_context = perp_res["text"]
-                    
-                    if chat_request.mode == "deep_research":
-                        docs = rag_res.get("documents", [])
-                        if docs:
-                            msg_bib = "Documentos consultados en Biblioteca Privada:"
-                            yield create_sse_event({"event": "status", "message": msg_bib})
-                            status_history.append(msg_bib)
-                            for doc in docs:
-                                doc_msg = f"  • {doc}"
-                                yield create_sse_event({"event": "status", "message": doc_msg})
-                                status_history.append(doc_msg)
-                                await asyncio.sleep(0.4)
-                        
-                        citaciones = perp_res.get("citations", [])
-                        sitios_unicos = list(set(urlparse(url).netloc for url in citaciones if url))
-                        if sitios_unicos:
-                            msg_web = "Sitios web consultados:"
-                            yield create_sse_event({"event": "status", "message": msg_web})
-                            status_history.append(msg_web)
-                            for sitio in sitios_unicos:
-                                web_msg = f"  • {sitio}"
-                                yield create_sse_event({"event": "status", "message": web_msg})
-                                status_history.append(web_msg)
+                    citaciones = perp_res.get("citations", [])
+                    sitios_unicos = list(set(urlparse(url).netloc for url in citaciones if url))
+                    if sitios_unicos:
+                        msg_web = "Sitios web consultados:"
+                        yield create_sse_event({"event": "status", "message": msg_web})
+                        status_history.append(msg_web)
+                        for sitio in sitios_unicos:
+                            web_msg = f"  • {sitio}"
+                            yield create_sse_event({"event": "status", "message": web_msg})
+                            status_history.append(web_msg)
                 
                 msg = "Sintetizando y correlacionando hallazgos..."
                 yield create_sse_event({"event": "status", "message": msg})
@@ -1133,12 +1175,19 @@ Pregunta del usuario: {chat_request.prompt}
         full_response_text = ""
         
         thinking_level = "high" if chat_request.mode == "deep_research" else "medium"
+        if chat_request.mode == "chat" and fast_direct_mode:
+            thinking_level = "minimal"
         
         # Inyectar el log de estados en la respuesta para el historial y efecto streaming en UI
         if chat_request.mode == "deep_research" and status_history:
             injection = "<pida_status_log>\n" + "\n".join(status_history) + "\n</pida_status_log>\n\n"
             yield create_sse_event({'text': injection})
             full_response_text += injection
+
+        # Inyectar la sugerencia de Deep Research si aplica en modo Chat
+        if chat_request.mode == "chat" and suggestion_prefix:
+            yield create_sse_event({'text': suggestion_prefix})
+            full_response_text += suggestion_prefix
 
         async for chunk in gemini_client.generate_streaming_response(
             system_prompt=system_prompt_mode,
