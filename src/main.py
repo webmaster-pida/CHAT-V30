@@ -140,8 +140,7 @@ Debes elegir exactamente una de las siguientes tres decisiones:
 
 Responde ESTRICTAMENTE con un objeto JSON válido que tenga el siguiente formato (sin bloques de código markdown, sin explicaciones adicionales, solo el JSON crudo):
 {{
-  "decision": "FAST_DIRECT" | "ROUTED_MAJOR" | "DEEP_SUGGESTION",
-  "suggestion_text": "Una sugerencia muy amigable, cercana y profesional (máximo 2 líneas) invitando al usuario a usar el modo 'Deep Research' (Búsqueda Profunda) si quiere un dictamen completo y auditado paso a paso para esta consulta de alta complejidad (rellenar únicamente si la decisión es DEEP_SUGGESTION; de lo contrario, dejar vacío)."
+  "decision": "FAST_DIRECT" | "ROUTED_MAJOR" | "DEEP_SUGGESTION"
 }}
 """
     try:
@@ -162,7 +161,7 @@ Responde ESTRICTAMENTE con un objeto JSON válido que tenga el siguiente formato
         return json.loads(raw_text)
     except Exception as e:
         log.error(f"Error en evaluación de ruteo de chat: {e}")
-        return {"decision": "ROUTED_MAJOR", "suggestion_text": ""}
+        return {"decision": "ROUTED_MAJOR"}
 
 async def ejecutar_investigacion_profunda(
     job_id: str, 
@@ -880,6 +879,7 @@ async def stream_chat_response_generator(chat_request: ChatRequest, country_code
         documentos_acumulados = set()
         sitios_acumulados = set()
         executed_agentic_plan = False
+        searches_executed = False
 
         # --- AGENTIC PLAN-AND-SOLVE FOR DEEP RESEARCH ---
         if chat_request.mode == "deep_research":
@@ -985,7 +985,6 @@ No incluyas explicaciones, ni bloques de código markdown, solo el JSON puro.
             search_query = chat_request.prompt
             
             # --- EVALUACIÓN DE RUTEO EXCLUSIVA PARA MODO CHAT ---
-            suggestion_prefix = ""
             fast_direct_mode = False
             
             if chat_request.mode == "chat":
@@ -1001,9 +1000,6 @@ No incluyas explicaciones, ni bloques de código markdown, solo el JSON puro.
                     yield create_sse_event({"event": "status", "message": "Procesando respuesta rápida directa..."})
                     status_history.append("Procesando respuesta rápida directa...")
                 elif decision == "DEEP_SUGGESTION":
-                    suggestion_prefix = routing_result.get("suggestion_text", "")
-                    if suggestion_prefix:
-                        suggestion_prefix = f"💡 *{suggestion_prefix}*\n\n"
                     yield create_sse_event({"event": "status", "message": "Analizando consulta profunda con búsquedas..."})
                     status_history.append("Analizando consulta profunda con búsquedas...")
                 else:
@@ -1059,6 +1055,7 @@ Respuesta (sin comillas, sin explicaciones):"""
             web_context = ""
 
             if "SKIP_SEARCH" not in search_query.upper() and not fast_direct_mode:
+                searches_executed = True
                 msg = "Analizando fuentes web y biblioteca privada..."
                 yield create_sse_event({"event": "status", "message": msg})
                 status_history.append(msg)
@@ -1166,8 +1163,10 @@ Pregunta del usuario: {chat_request.prompt}
         
         # Determinación de instrucciones dinámicas del sistema y del prompt según el modo
         if chat_request.mode == "chat":
-            system_prompt_mode = PIDA_CHAT_SYSTEM_PROMPT + "\n\n⚠️ **MODO CHAT ACTIVO:** Tienes ESTRICTAMENTE PROHIBIDO generar la sección `## Fuentes y Jurisprudencia` al final de tu respuesta. NO utilices etiquetas técnicas como `<pida_questions>` o `</pida_questions>`. Integra exactamente tres preguntas de seguimiento de manera totalmente natural, amigable y legible al final de tu texto como parte de tu respuesta normal de chat."
-            final_prompt += "\n⚠️ REGLA DE CHAT: NO incluyas la sección de 'Fuentes y Jurisprudencia' al final de la respuesta. Genera directamente exactamente 3 preguntas de seguimiento al final de tu respuesta de forma natural y conversacional (por ejemplo, usando viñetas o en un párrafo amigable). NO utilices las etiquetas `<pida_questions>` ni delimitadores como plecas (`|`). Deben ser legibles y formar parte normal del cuerpo de la respuesta."
+            system_prompt_mode = PIDA_CHAT_SYSTEM_PROMPT + "\n\n⚠️ **MODO CHAT ACTIVO:** Tienes ESTRICTAMENTE PROHIBIDO generar la sección `## Fuentes y Jurisprudencia` al final de tu respuesta. NO utilices etiquetas técnicas como `<pida_questions>` o `</pida_questions>`. NO generes preguntas de seguimiento."
+            final_prompt += "\n⚠️ REGLA DE CHAT: NO incluyas la sección de 'Fuentes y Jurisprudencia' al final de la respuesta. NO generes preguntas de seguimiento."
+            if searches_executed:
+                final_prompt += "\nDado que esta consulta activó una búsqueda en bases de datos externas, añade amablemente al final de tu respuesta un breve mensaje sugiriendo al usuario que si desea investigar este tema con mayor profundidad, puede utilizar el modo de 'Investigación Profunda'."
         else:
             system_prompt_mode = PIDA_SYSTEM_PROMPT + "\n\n⚠️ **MODO DEEP RESEARCH ACTIVO:** DEBES generar obligatoriamente la sección `## Fuentes y Jurisprudencia` con el formato y orden estricto solicitado, además de las 3 preguntas de seguimiento al final con `<pida_questions>` y `</pida_questions>`."
             final_prompt += "\n⚠️ REGLA DE DEEP RESEARCH: DEBES incluir tanto la sección de 'Fuentes y Jurisprudencia' como las 3 preguntas de seguimiento con las etiquetas `<pida_questions>` y `</pida_questions>` al final de todo."
@@ -1183,11 +1182,6 @@ Pregunta del usuario: {chat_request.prompt}
             injection = "<pida_status_log>\n" + "\n".join(status_history) + "\n</pida_status_log>\n\n"
             yield create_sse_event({'text': injection})
             full_response_text += injection
-
-        # Inyectar la sugerencia de Deep Research si aplica en modo Chat
-        if chat_request.mode == "chat" and suggestion_prefix:
-            yield create_sse_event({'text': suggestion_prefix})
-            full_response_text += suggestion_prefix
 
         async for chunk in gemini_client.generate_streaming_response(
             system_prompt=system_prompt_mode,
