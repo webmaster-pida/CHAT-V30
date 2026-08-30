@@ -25,7 +25,7 @@ from src.config import settings, log
 from src.models.chat_models import ChatRequest, ChatMessage
 
 from src.modules import perplexity_client, gemini_client, rag_client, firestore_client
-from src.core.prompts import PIDA_SYSTEM_PROMPT
+from src.core.prompts import PIDA_SYSTEM_PROMPT, PIDA_CHAT_SYSTEM_PROMPT
 from src.core.security import get_current_user
 
 from google.cloud import firestore
@@ -1124,7 +1124,7 @@ Pregunta del usuario: {chat_request.prompt}
         
         # Determinación de instrucciones dinámicas del sistema y del prompt según el modo
         if chat_request.mode == "chat":
-            system_prompt_mode = PIDA_SYSTEM_PROMPT + "\n\n⚠️ **MODO CHAT ACTIVO:** Tienes ESTRICTAMENTE PROHIBIDO generar la sección `## Fuentes y Jurisprudencia` al final de tu respuesta. No listes las fuentes. Sin embargo, DEBES generar exactamente las 3 preguntas de seguimiento al final encapsuladas en las etiquetas `<pida_questions>` y `</pida_questions>` como se describe en las reglas."
+            system_prompt_mode = PIDA_CHAT_SYSTEM_PROMPT + "\n\n⚠️ **MODO CHAT ACTIVO:** Tienes ESTRICTAMENTE PROHIBIDO generar la sección `## Fuentes y Jurisprudencia` al final de tu respuesta. No listes las fuentes. Sin embargo, DEBES generar exactamente las 3 preguntas de seguimiento al final encapsuladas en las etiquetas `<pida_questions>` y `</pida_questions>` como se describe en las reglas."
             final_prompt += "\n⚠️ REGLA DE CHAT: NO incluyas la sección de 'Fuentes y Jurisprudencia' al final de la respuesta. Pero SÍ genera las 3 preguntas de seguimiento con las etiquetas `<pida_questions>` y `</pida_questions>` al final de todo."
         else:
             system_prompt_mode = PIDA_SYSTEM_PROMPT + "\n\n⚠️ **MODO DEEP RESEARCH ACTIVO:** DEBES generar obligatoriamente la sección `## Fuentes y Jurisprudencia` con el formato y orden estricto solicitado, además de las 3 preguntas de seguimiento al final con `<pida_questions>` y `</pida_questions>`."
