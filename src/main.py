@@ -917,21 +917,23 @@ async def stream_chat_response_generator(chat_request: ChatRequest, country_code
         searches_executed = False
 
         # --- AGENTIC PLAN-AND-SOLVE FOR DEEP RESEARCH ---
-            is_followup = False
-            if chat_request.mode == "deep_research":
-                if history_from_db:
-                    # Extraer los últimos mensajes para darle contexto suficiente al evaluador
-                    history_context = "\n".join([f"{msg.role.upper()}: {msg.content[:400]}" for msg in history_from_db[-3:]])
-                    is_followup = await evaluate_deep_research_followup(chat_request.prompt, history_context)
+        is_followup = False
+        if chat_request.mode == "deep_research":
+            if history_from_db:
+                # Extraer los últimos mensajes para darle contexto suficiente al evaluador
+                history_context = "\n".join([f"{msg.role.upper()}: {msg.content[:400]}" for msg in history_from_db[-3:]])
+                is_followup = await evaluate_deep_research_followup(chat_request.prompt, history_context)
 
-                if is_followup:
-                    msg_followup = "Procesando aclaración con base en la investigación previa..."
-                    yield create_sse_event({"event": "status", "message": msg_followup})
-                    status_history.append(msg_followup)
-                    executed_agentic_plan = True
+            if is_followup:
+                msg_followup = "Procesando aclaración con base en la investigación previa..."
+                yield create_sse_event({"event": "status", "message": msg_followup})
+                status_history.append(msg_followup)
+                executed_agentic_plan = True
 
-            if chat_request.mode == "deep_research" and not is_followup:
-                msg_plan = "Trazando plan de investigación estructurado..."
+        if chat_request.mode == "deep_research" and not is_followup:
+            msg_plan = "Trazando plan de investigación estructurado..."
+            yield create_sse_event({"event": "status", "message": msg_plan})
+            status_history.append(msg_plan)
 
             try:
                 planner_prompt = f"""
