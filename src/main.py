@@ -14,7 +14,7 @@ import uuid
 
 # 👇 NUEVAS IMPORTACIONES AÑADIDAS
 from pydantic import BaseModel
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, quote
 from firebase_admin import auth as firebase_auth
 
 # Librerías para documentos
@@ -915,6 +915,7 @@ async def stream_chat_response_generator(chat_request: ChatRequest, country_code
         sitios_acumulados = set()
         executed_agentic_plan = False
         searches_executed = False
+        decision = None
 
         # --- AGENTIC PLAN-AND-SOLVE FOR DEEP RESEARCH ---
         is_followup = False
@@ -1251,6 +1252,16 @@ Pregunta del usuario: {chat_request.prompt}
         ):
             yield create_sse_event({'text': chunk})
             full_response_text += chunk
+
+        if chat_request.mode == "chat" and decision == "DEEP_SUGGESTION":
+            encoded_prompt = quote(chat_request.prompt)
+            suggestion_block = (
+                f"\n\n---\n💡 **Sugerencia PIDA:** Esta consulta involucra múltiples aspectos jurídicos complejos. "
+                f"¿Deseas ejecutar un dictamen completo con auditoría de fuentes? "
+                f"[Activar Investigación Profunda](pida-action:switch_deep_research?query={encoded_prompt})"
+            )
+            yield create_sse_event({'text': suggestion_block})
+            full_response_text += suggestion_block
 
         if full_response_text:
             model_message = ChatMessage(role="model", content=full_response_text, mode=chat_request.mode)
