@@ -163,6 +163,41 @@ Responde ESTRICTAMENTE con un objeto JSON válido que tenga el siguiente formato
         log.error(f"Error en evaluación de ruteo de chat: {e}")
         return {"decision": "ROUTED_MAJOR"}
 
+async def evaluate_deep_research_followup(prompt: str, history_context: str) -> bool:
+    """
+    Evalúa si la repregunta es una aclaración/seguimiento sobre el informe de 
+    Investigación Profunda existente o si solicita investigar un tema/caso nuevo.
+    Retorna True si es un seguimiento (modo rápido con memoria), False si exige nueva investigación.
+    """
+    eval_prompt = f"""
+Eres un ruteador de consultas para PIDA. Tu tarea es analizar la nueva pregunta del usuario frente al historial reciente que ya contiene una investigación previa.
+
+Historial reciente:
+{history_context}
+
+Nueva pregunta: {prompt}
+
+Instrucciones de evaluación:
+- Responde 'FOLLOWUP' si la pregunta busca resumir, redactar un escrito/recurso, pedir aclaraciones, profundizar en un punto del informe previo o hacer consultas directas sobre lo ya expuesto.
+- Responde 'NEW_RESEARCH' si el usuario pide investigar un país, caso, tratado o tema jurídico totalmente distinto e independiente a lo tratado anteriormente.
+
+Decisión (Responde ESTRICTAMENTE con FOLLOWUP o NEW_RESEARCH):"""
+    try:
+        response = await genai_client.aio.models.generate_content(
+            model=settings.MINOR_DECISION_MODEL,
+            contents=eval_prompt,
+            config=types.GenerateContentConfig(
+                max_output_tokens=10,
+                thinking_config=types.ThinkingConfig(thinking_level="minimal")
+            )
+        )
+        decision = response.text.strip().upper() if response.text else "FOLLOWUP"
+        log.info(f"Decisión de seguimiento Deep Research: {decision}")
+        return "FOLLOWUP" in decision
+    except Exception as e:
+        log.error(f"Error evaluando repregunta de Deep Research: {e}")
+        return True  # Fallback seguro: responder mediante el chat usando la memoria previa
+
 async def ejecutar_investigacion_profunda(
     job_id: str, 
     prompt: str, 
@@ -882,10 +917,21 @@ async def stream_chat_response_generator(chat_request: ChatRequest, country_code
         searches_executed = False
 
         # --- AGENTIC PLAN-AND-SOLVE FOR DEEP RESEARCH ---
-        if chat_request.mode == "deep_research":
-            msg_plan = "Trazando plan de investigación estructurado..."
-            yield create_sse_event({"event": "status", "message": msg_plan})
-            status_history.append(msg_plan)
+            is_followup = False
+            if chat_request.mode == "deep_research":
+                if history_from_db:
+                    # Extraer los últimos mensajes para darle contexto suficiente al evaluador
+                    history_context = "\n".join([f"{msg.role.upper()}: {msg.content[:400]}" for msg in history_from_db[-3:]])
+                    is_followup = await evaluate_deep_research_followup(chat_request.prompt, history_context)
+
+                if is_followup:
+                    msg_followup = "Procesando aclaración con base en la investigación previa..."
+                    yield create_sse_event({"event": "status", "message": msg_followup})
+                    status_history.append(msg_followup)
+                    executed_agentic_plan = True
+
+            if chat_request.mode == "deep_research" and not is_followup:
+                msg_plan = "Trazando plan de investigación estructurado..."
 
             try:
                 planner_prompt = f"""
@@ -1107,7 +1153,15 @@ Respuesta (sin comillas, sin explicaciones):"""
         fecha_actual = get_date_utc_minus_6()
         
         # 2. Inyecta la fecha en la primera línea del final_prompt
-        if executed_agentic_plan:
+        if is_followup:
+            final_prompt = f"""Fecha actual del sistema: {fecha_actual}
+Contexto geográfico principal: {country_code or 'General'}
+
+Responde a la siguiente consulta aclaratoria utilizando como fuente principal el dictamen de investigación previa disponible en tu memoria contextual:
+
+Pregunta del usuario: {chat_request.prompt}
+"""
+        elif executed_agentic_plan:
             final_prompt = f"""Fecha actual del sistema: {fecha_actual}
 Contexto geográfico principal: {country_code or 'General'}
 
@@ -1162,7 +1216,10 @@ Pregunta del usuario: {chat_request.prompt}
 """
         
         # Determinación de instrucciones dinámicas del sistema y del prompt según el modo
-        if chat_request.mode == "chat":
+        if is_followup:
+            system_prompt_mode = PIDA_SYSTEM_PROMPT + "\n\n⚠️ **MODO DEEP RESEARCH (REPREGUNTA):** Responde a la aclaración basándote en la memoria del informe previo. Incluye al final las 3 preguntas de seguimiento con las etiquetas <pida_questions> y </pida_questions>."
+            final_prompt += "\n⚠️ REGLA DE DEEP RESEARCH: DEBES incluir tanto la sección de 'Fuentes y Jurisprudencia' como las 3 preguntas de seguimiento con las etiquetas `<pida_questions>` y `</pida_questions>` al final de todo."
+        elif chat_request.mode == "chat":
             system_prompt_mode = PIDA_CHAT_SYSTEM_PROMPT + "\n\n⚠️ **MODO CHAT ACTIVO:** Tienes ESTRICTAMENTE PROHIBIDO generar la sección `## Fuentes y Jurisprudencia` al final de tu respuesta. NO utilices etiquetas técnicas como `<pida_questions>` o `</pida_questions>`. NO generes preguntas de seguimiento."
             final_prompt += "\n⚠️ REGLA DE CHAT: NO incluyas la sección de 'Fuentes y Jurisprudencia' al final de la respuesta. NO generes preguntas de seguimiento."
             if searches_executed:
